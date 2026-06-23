@@ -1,0 +1,784 @@
+#!/usr/bin/env python3
+"""
+James Algorithm — Bybit Proxy Server
+Handles: Bybit REST API (Spot + Futures), WebSocket price feeds, Claude AI
+Run: python3 bybit_proxy.py
+"""
+
+from http.server import HTTPServer, BaseHTTPRequestHandler
+import urllib.request, urllib.error, urllib.parse
+import ssl, json, hmac, hashlib, time, threading
+import websocket  # pip install websocket-client
+
+import os
+
+PORT       = int(os.environ.get("PORT", 8766))   # Render sets PORT automatically
+BYBIT_LIVE = "https://api.bybit.com"
+BYBIT_DEMO = "https://api-demo.bybit.com"
+CLAUDE_URL = "https://api.anthropic.com/v1/messages"
+ALPACA_NEWS = "https://data.alpaca.markets/v1beta1"
+
+# ── Set via Render environment variable DEMO_MODE=true/false ──────────
+USE_DEMO = os.environ.get("DEMO_MODE", "true").lower() == "true"
+BASE_URL  = BYBIT_DEMO if USE_DEMO else BYBIT_LIVE
+
+# ── Windows DNS fix ────────────────────────────────────────────────────
+# Windows sometimes blocks Python DNS — patch to use Google 8.8.8.8
+import socket as _socket, subprocess as _subprocess, re as _re
+_orig_getaddrinfo = _socket.getaddrinfo
+def _patched_getaddrinfo(host, port, *args, **kwargs):
+    try:
+        return _orig_getaddrinfo(host, port, *args, **kwargs)
+    except _socket.gaierror:
+        try:
+            out = _subprocess.run(['nslookup', host, '8.8.8.8'],
+                capture_output=True, text=True, timeout=5).stdout
+            ips = [ip for ip in _re.findall(r'Address:\s*(\d+\.\d+\.\d+\.\d+)', out)
+                   if not ip.startswith('8.8')]
+            if ips:
+                return _orig_getaddrinfo(ips[0], port, *args, **kwargs)
+        except Exception:
+            pass
+        raise
+_socket.getaddrinfo = _patched_getaddrinfo
+
+ssl_ctx = ssl.create_default_context()
+ssl_ctx.check_hostname = False
+ssl_ctx.verify_mode = ssl.CERT_NONE
+
+# ── WebSocket price cache ──────────────────────────────────────────────
+# Stores latest prices pushed by Bybit WebSocket
+price_cache = {}   # symbol → { price, change24h, timestamp }
+ws_subscribed = set()
+ws_app = None
+ws_thread = None
+api_key_global = ""
+api_secret_global = ""
+
+def safe_float(val, default=0.0):
+    """Safely convert any value to float — handles empty strings, None, etc."""
+    try:
+        return float(val) if val not in (None, '', 'None') else default
+    except (ValueError, TypeError):
+        return default
+
+# ── Bybit server time sync ─────────────────────────────────────────────
+# Windows clocks often drift — sync with Bybit server time to avoid 10002
+_time_offset_ms = 0  # milliseconds to add to local time
+
+def sync_bybit_time():
+    """Fetch Bybit server time and calculate offset from local clock"""
+    global _time_offset_ms
+    try:
+        url = "https://api.bybit.com/v5/market/time"
+        req = urllib.request.Request(url)
+        with urllib.request.urlopen(req, context=ssl_ctx, timeout=5) as r:
+            d = json.loads(r.read())
+            server_ms  = int(d.get("result", {}).get("timeNano", "0")[:13] or
+                            d.get("result", {}).get("timeSecond", "0") + "000")
+            local_ms   = int(time.time() * 1000)
+            _time_offset_ms = server_ms - local_ms
+            print(f"    TIME SYNC: offset={_time_offset_ms}ms (local {'fast' if _time_offset_ms < 0 else 'slow'} by {abs(_time_offset_ms)}ms)")
+    except Exception as e:
+        print(f"    TIME SYNC failed: {e} — using local time")
+        _time_offset_ms = 0
+
+def bybit_timestamp():
+    """Return current timestamp in ms, corrected for server time offset"""
+    return int(time.time() * 1000) + _time_offset_ms
+
+def bybit_sign(api_key, api_secret, params_str):
+    """
+    Bybit V5 API signature:
+    sign_str = timestamp + api_key + recv_window + params_str
+    recv_window increased to 20000ms to handle clock drift
+    """
+    timestamp   = str(bybit_timestamp())
+    recv_window = "20000"   # 20s window — handles up to 20s clock drift
+    sign_str    = timestamp + api_key + recv_window + params_str
+    signature   = hmac.new(
+        api_secret.encode('utf-8'),
+        sign_str.encode('utf-8'),
+        hashlib.sha256
+    ).hexdigest()
+    return timestamp, recv_window, signature
+
+def bybit_headers(api_key, api_secret, params_str=""):
+    timestamp, recv_window, signature = bybit_sign(api_key, api_secret, params_str)
+    return {
+        "X-BAPI-API-KEY":     api_key,
+        "X-BAPI-TIMESTAMP":   timestamp,
+        "X-BAPI-RECV-WINDOW": recv_window,
+        "X-BAPI-SIGN":        signature,
+        "Content-Type":       "application/json",
+    }
+
+def bybit_get(path, params, api_key, api_secret):
+    sorted_params = dict(sorted(params.items()))
+    query = urllib.parse.urlencode(sorted_params)
+    url   = BASE_URL + path + ("?" + query if query else "")
+    hdrs  = bybit_headers(api_key, api_secret, query)
+    req   = urllib.request.Request(url)
+    for k, v in hdrs.items():
+        req.add_header(k, v)
+    try:
+        with urllib.request.urlopen(req, context=ssl_ctx, timeout=10) as r:
+            raw = r.read()
+            d = json.loads(raw)
+            ret_code = d.get("retCode", 0)
+            ret_msg  = d.get("retMsg", "")
+            print(f"    bybit_get {path} → retCode={ret_code} retMsg={ret_msg}")
+            if ret_code != 0:
+                raise Exception(f"Bybit retCode {ret_code}: {ret_msg}")
+            return d
+    except urllib.error.HTTPError as e:
+        raw = e.read()
+        print(f"    bybit_get HTTP {e.code}: {raw[:200]}")
+        try:
+            err = json.loads(raw)
+            raise Exception(f"Bybit HTTP {e.code}: {err.get('retMsg', err)}")
+        except json.JSONDecodeError:
+            raise Exception(f"Bybit HTTP {e.code}: {raw[:100]}")
+
+def bybit_post(path, body, api_key, api_secret):
+    body_str = json.dumps(body, separators=(',', ':'))  # compact JSON
+    hdrs     = bybit_headers(api_key, api_secret, body_str)
+    url      = BASE_URL + path
+    req      = urllib.request.Request(url, data=body_str.encode('utf-8'), method="POST")
+    for k, v in hdrs.items():
+        req.add_header(k, v)
+    try:
+        with urllib.request.urlopen(req, context=ssl_ctx, timeout=10) as r:
+            d = json.loads(r.read())
+            if d.get("retCode", 0) != 0:
+                raise Exception(d.get("retMsg", "Bybit API error"))
+            return d
+    except urllib.error.HTTPError as e:
+        err = json.loads(e.read())
+        raise Exception(err.get("retMsg", str(e)))
+
+# ── WebSocket price feed ───────────────────────────────────────────────
+def start_ws(symbols):
+    """Subscribe to real-time ticker updates for given symbols"""
+    global ws_app, ws_thread
+
+    # Bybit demo and live use same WebSocket stream
+    ws_url = "wss://stream.bybit.com/v5/public/spot"
+
+    topics = [f"tickers.{s}" for s in symbols]
+
+    def on_message(ws, message):
+        try:
+            d = json.loads(message)
+            if d.get("topic","").startswith("tickers."):
+                data = d.get("data", {})
+                sym  = data.get("symbol","")
+                if sym:
+                    price_cache[sym] = {
+                        "price":     safe_float(data.get("lastPrice", 0)),
+                        "change24h": safe_float(data.get("price24hPcnt", 0)) * 100,
+                        "bid":       safe_float(data.get("bid1Price", 0)),
+                        "ask":       safe_float(data.get("ask1Price", 0)),
+                        "volume":    safe_float(data.get("volume24h", 0)),
+                        "ts":        time.time(),
+                    }
+        except Exception as e:
+            print(f"WS parse error: {e}")
+
+    def on_open(ws):
+        sub = {"op": "subscribe", "args": topics}
+        ws.send(json.dumps(sub))
+        print(f"WS subscribed: {topics}")
+
+    def on_error(ws, error):
+        print(f"WS error: {error}")
+
+    def on_close(ws, *args):
+        print("WS closed")
+
+    ws_app = websocket.WebSocketApp(
+        ws_url,
+        on_message=on_message,
+        on_open=on_open,
+        on_error=on_error,
+        on_close=on_close,
+    )
+    ws_thread = threading.Thread(target=ws_app.run_forever, daemon=True)
+    ws_thread.start()
+
+def subscribe_symbol(symbol):
+    """Add a new symbol to WebSocket subscription"""
+    global ws_app
+    if symbol in ws_subscribed:
+        return
+    ws_subscribed.add(symbol)
+    if ws_app:
+        sub = {"op": "subscribe", "args": [f"tickers.{symbol}"]}
+        try:
+            ws_app.send(json.dumps(sub))
+        except:
+            pass
+
+# ── HTTP Proxy Handler ─────────────────────────────────────────────────
+class BybitProxyHandler(BaseHTTPRequestHandler):
+
+    def log_message(self, format, *args):
+        pass  # suppress default logs
+
+    def send_cors(self):
+        # Allow all origins including VS Code Live Server (127.0.0.1:5500)
+        origin = self.headers.get('Origin', '*')
+        self.send_header("Access-Control-Allow-Origin", origin)
+        self.send_header("Access-Control-Allow-Credentials", "true")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "*")
+        self.send_header("Access-Control-Max-Age", "86400")
+
+    def send_json(self, status, data):
+        body = json.dumps(data).encode()
+        self.send_response(status)
+        self.send_cors()
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_OPTIONS(self):
+        self.send_response(204)
+        self.send_cors()
+        self.end_headers()
+
+    def do_GET(self):
+        parsed = urllib.parse.urlparse(self.path)
+        params = urllib.parse.parse_qs(parsed.query)
+        api_key    = params.get("key",    [""])[0]
+        api_secret = params.get("secret", [""])[0]
+
+        path = parsed.path
+
+        if path == "/price":
+            self.handle_price(params)
+        elif path == "/account":
+            self.handle_account(api_key, api_secret)
+        elif path == "/positions":
+            category = params.get("category", ["linear"])[0]
+            self.handle_positions(api_key, api_secret, category)
+        elif path == "/balance":
+            self.handle_balance(api_key, api_secret)
+        elif path == "/news":
+            self.handle_news(params)
+        elif path == "/klines" or path == "/kline":
+            self.handle_kline(params)
+        elif path == "/instrument":
+            self.handle_instrument(params)
+        elif path == "/ping" or path == "/healthz":
+            # Simple connectivity test — Render uses /healthz for health checks
+            self.send_json(200, {"status": "proxy_ok", "url": BASE_URL, "demo": USE_DEMO})
+        elif path == "/test":
+            # Test API keys with simplest possible Bybit call
+            self.handle_test(api_key, api_secret)
+        elif path == "/ws_status":
+            self.send_json(200, {"subscribed": list(ws_subscribed), "cache": list(price_cache.keys())})
+        else:
+            self.send_json(404, {"error": "Not found"})
+
+    def do_POST(self):
+        parsed = urllib.parse.urlparse(self.path)
+        length = int(self.headers.get("Content-Length", 0))
+        body   = json.loads(self.rfile.read(length)) if length else {}
+        params = urllib.parse.parse_qs(parsed.query)
+        api_key    = params.get("key",    [""])[0] or body.get("key", "")
+        api_secret = params.get("secret", [""])[0] or body.get("secret", "")
+
+        path = parsed.path
+
+        if path == "/order":
+            self.handle_order(api_key, api_secret, body)
+        elif path == "/close":
+            self.handle_close(api_key, api_secret, body)
+        elif path == "/margin-mode":
+            self.handle_margin_mode(api_key, api_secret, body)
+        elif path == "/subscribe":
+            symbol = body.get("symbol","")
+            if symbol:
+                subscribe_symbol(symbol)
+            self.send_json(200, {"subscribed": symbol})
+        elif path == "/claude":
+            self.handle_claude(api_key, api_secret, body)
+        else:
+            self.send_json(404, {"error": "Not found"})
+
+    def handle_price(self, params):
+        symbol   = params.get("symbol", [""])[0].upper()
+        category = params.get("category", ["spot"])[0]
+
+        # Check WebSocket cache first (real-time)
+        if symbol in price_cache:
+            cached = price_cache[symbol]
+            age = time.time() - cached.get("ts", 0)
+            if age < 10:  # use cache if less than 10s old
+                self.send_json(200, {"symbol": symbol, "source": "websocket", **cached})
+                return
+
+        # Fallback to REST API
+        try:
+            d = bybit_get("/v5/market/tickers",
+                {"category": category, "symbol": symbol},
+                "", "")  # public endpoint, no auth needed
+            items = d.get("result", {}).get("list", [])
+            if not items:
+                self.send_json(404, {"error": f"Symbol {symbol} not found"})
+                return
+            item = items[0]
+            result = {
+                "symbol":    symbol,
+                "price":     safe_float(item.get("lastPrice", 0)),
+                "change24h": safe_float(item.get("price24hPcnt", 0)) * 100,
+                "bid":       safe_float(item.get("bid1Price", 0)),
+                "ask":       safe_float(item.get("ask1Price", 0)),
+                "volume":    safe_float(item.get("volume24h", 0)),
+                "source":    "rest",
+            }
+            # Cache it
+            price_cache[symbol] = {**result, "ts": time.time()}
+            self.send_json(200, result)
+        except Exception as e:
+            self.send_json(500, {"error": str(e)})
+
+    def handle_account(self, api_key, api_secret):
+        print(f"\n--- BYBIT ACCOUNT (key={api_key[:8] if api_key else 'EMPTY'}...)")
+        if not api_key or not api_secret:
+            self.send_json(400, {"error": "API key and secret are required"})
+            return
+        try:
+            # Bybit V5 wallet balance — try all account types
+            last_error = None
+            for account_type in ["UNIFIED", "SPOT", "CONTRACT"]:
+                try:
+                    d = bybit_get("/v5/account/wallet-balance",
+                        {"accountType": account_type}, api_key, api_secret)
+                    coins = d.get("result", {}).get("list", [{}])[0].get("coin", [])
+                    usdt  = next((c for c in coins if c.get("coin") == "USDT"), None)
+                    print(f"    {account_type}: coins={[c.get('coin') for c in coins]}")
+                    if usdt:
+                        result = {
+                            "equity":            safe_float(usdt.get("equity") or usdt.get("walletBalance", 0)),
+                            "available_balance": safe_float(usdt.get("availableToWithdraw") or usdt.get("available") or usdt.get("walletBalance", 0)),
+                            "wallet_balance":    safe_float(usdt.get("walletBalance", 0)),
+                            "unrealized_pnl":    safe_float(usdt.get("unrealisedPnl", 0)),
+                            "account_type":      account_type,
+                        }
+                        print(f"    SUCCESS: equity={result['equity']}")
+                        self.send_json(200, result)
+                        return
+                except Exception as e:
+                    last_error = str(e)
+                    print(f"    {account_type} failed: {e}")
+                    continue
+
+            # All account types failed — give helpful error
+            err = last_error or "Could not access Bybit account"
+            # Parse common Bybit error codes for clearer messages
+            if "10003" in str(err) or "invalid api_key" in str(err).lower():
+                err = "Invalid API key — check you copied the full key correctly (no spaces)"
+            elif "10004" in str(err) or "sign" in str(err).lower():
+                err = "Invalid API signature — check your Secret Key is correct"
+            elif "10005" in str(err) or "permission" in str(err).lower():
+                err = "API key missing Trade permission — enable it on Bybit API Management page"
+            elif "33004" in str(err) or "ip" in str(err).lower():
+                err = "IP not whitelisted — remove IP restriction from your Bybit API key settings"
+            elif "getaddrinfo" in str(err).lower() or "11001" in str(err):
+                err = "Cannot reach Bybit — check internet connection (DNS error)"
+            raise Exception(err)
+
+        except Exception as e:
+            print(f"    ACCOUNT FINAL ERROR: {e}")
+            self.send_json(400, {"error": str(e)})
+
+    def handle_positions(self, api_key, api_secret, category):
+        positions = []  # always initialise FIRST — prevents UnboundLocalError
+        try:
+            # Bybit /v5/position/list only supports linear and option — NOT spot
+            if category == 'spot':
+                # Spot holdings live in wallet balance, not position list
+                try:
+                    d = bybit_get("/v5/account/wallet-balance",
+                        {"accountType": "UNIFIED"}, api_key, api_secret)
+                    coins = d.get("result", {}).get("list", [{}])[0].get("coin", [])
+                    for c in coins:
+                        coin = c.get("coin", "")
+                        if coin in ("USDT","USDC","USD","USDE"): continue
+                        qty = safe_float(c.get("walletBalance", 0))
+                        if qty <= 0: continue
+                        avg_price = safe_float(c.get("avgPrice", 0))
+                        unreal    = safe_float(c.get("unrealisedPnl", 0))
+                        # Fetch current market price for spot positions
+                        cur_price = avg_price
+                        try:
+                            tick = bybit_get("/v5/market/tickers",
+                                {"category":"spot","symbol":coin+"USDT"})
+                            tick_list = tick.get("result",{}).get("list",[])
+                            if tick_list:
+                                cur_price = safe_float(tick_list[0].get("lastPrice", avg_price))
+                        except: pass
+                        cost   = avg_price * qty
+                        pl_pct = ((cur_price - avg_price) / avg_price) if avg_price > 0 else 0
+                        unreal = (cur_price - avg_price) * qty
+                        positions.append({
+                            "symbol":          coin + "USDT",
+                            "side":            "Buy",
+                            "size":            qty,
+                            "qty":             qty,
+                            "avg_entry_price": avg_price,
+                            "current_price":   cur_price,
+                            "unrealized_pl":   unreal,
+                            "unrealized_plpc": pl_pct,  # decimal e.g. 0.05 = 5%
+                            "cost_basis":      cost,
+                            "leverage":        1,
+                            "category":        "spot",
+                            "positionIdx":     0,
+                        })
+                except Exception as e:
+                    print(f"    SPOT BALANCE ERROR: {e}")
+                self.send_json(200, positions)
+                return
+
+            # linear or option — use position list, paginate to get all positions
+            all_pos_list = []
+            cursor = None
+            while True:
+                params = {"category": category, "settleCoin": "USDT", "limit": "200"}
+                if cursor:
+                    params["cursor"] = cursor
+                d = bybit_get("/v5/position/list", params, api_key, api_secret)
+                page = d.get("result", {}).get("list", [])
+                all_pos_list.extend(page)
+                cursor = d.get("result", {}).get("nextPageCursor", "")
+                if not cursor or len(page) < 200:
+                    break
+            for p in all_pos_list:
+                size = safe_float(p.get("size", 0))
+                if size == 0: continue
+                entry  = safe_float(p.get("avgPrice", 0))
+                mark   = safe_float(p.get("markPrice", 0))
+                side   = p.get("side", "Buy")
+                unreal = safe_float(p.get("unrealisedPnl", 0))
+                lev    = safe_float(p.get("leverage", 1)) or 1
+                cost   = entry * size / lev if lev > 0 else entry * size
+                pl_pct = (unreal / cost * 100) if cost > 0 else 0
+                positions.append({
+                    "symbol":          p.get("symbol"),
+                    "side":            side,
+                    "size":            size,
+                    "qty":             size,
+                    "avg_entry_price": entry,
+                    "current_price":   mark,
+                    "unrealized_pl":   unreal,
+                    "unrealized_plpc": pl_pct / 100,
+                    "cost_basis":      cost,
+                    "leverage":        lev,
+                    "category":        category,
+                    "positionIdx":     p.get("positionIdx", 0),
+                })
+        except Exception as e:
+            print(f"    POSITIONS ERROR: {e}")
+        # Always return whatever we have — even if empty
+        self.send_json(200, positions)
+
+    def handle_margin_mode(self, api_key, api_secret, body):
+        """Set margin mode for a futures position — isolated or cross"""
+        symbol    = body.get("symbol", "")
+        category  = body.get("category", "linear")
+        trade_mode = body.get("tradeMode", 1)  # 0=cross, 1=isolated
+        print(f"\n--- MARGIN MODE {symbol} mode={trade_mode}")
+        try:
+            d = bybit_post("/v5/position/switch-isolated", {
+                "symbol":    symbol,
+                "category":  category,
+                "tradeMode": trade_mode,
+                "buyLeverage": str(body.get("leverage", "1")),
+                "sellLeverage": str(body.get("leverage", "1")),
+            }, api_key, api_secret)
+            print(f"    MARGIN MODE: {d.get('retCode')} {d.get('retMsg')}")
+            self.send_json(200, {"ok": True, "msg": d.get("retMsg","")})
+        except Exception as e:
+            print(f"    MARGIN MODE ERROR: {e}")
+            self.send_json(200, {"ok": False, "msg": str(e)})  # non-fatal
+
+    def handle_order(self, api_key, api_secret, body):
+        """Place spot or futures order"""
+        category = body.get("category", "spot")
+        symbol   = body.get("symbol", "")
+        side     = body.get("side", "Buy")   # Buy or Sell
+        qty      = body.get("qty", "")       # base quantity for spot
+        notional = body.get("notional", "")  # USD value (for spot market buy)
+        order_type = body.get("orderType", "Market")
+        leverage = body.get("leverage", None)
+
+        print(f"\n--- BYBIT ORDER {side} {symbol} cat={category} qty={qty} notional={notional}")
+
+        try:
+            # Set leverage for futures before ordering
+            if category == "linear" and leverage:
+                try:
+                    bybit_post("/v5/position/set-leverage", {
+                        "category":    "linear",
+                        "symbol":      symbol,
+                        "buyLeverage": str(leverage),
+                        "sellLeverage": str(leverage),
+                    }, api_key, api_secret)
+                except:
+                    pass  # leverage may already be set
+
+            order_body = {
+                "category":  category,
+                "symbol":    symbol,
+                "side":      side,
+                "orderType": order_type,
+                "timeInForce": "IOC" if order_type == "Market" else "GTC",
+            }
+
+            if notional and category == "spot" and side == "Buy":
+                # Market buy by USD value (e.g. spend $100 on BTC)
+                order_body["marketUnit"] = "quoteCoin"
+                order_body["qty"] = str(notional)
+            elif qty:
+                order_body["qty"] = str(qty)
+
+            result = bybit_post("/v5/order/create", order_body, api_key, api_secret)
+            print(f"    ORDER RESULT: {result.get('retCode')} {result.get('retMsg')}")
+            if result.get("retCode") != 0:
+                self.send_json(400, {"error": result.get("retMsg", "Order failed")})
+            else:
+                self.send_json(200, result.get("result", {}))
+        except Exception as e:
+            print(f"    ORDER ERROR: {e}")
+            self.send_json(500, {"error": str(e)})
+
+    def handle_close(self, api_key, api_secret, body):
+        """Close a position — spot sell all or futures close"""
+        category = body.get("category", "spot")
+        symbol   = body.get("symbol", "")
+        qty      = body.get("qty", "")
+        side     = body.get("side", "Sell")  # opposite of open side
+        pos_idx  = body.get("positionIdx", 0)
+
+        print(f"\n--- BYBIT CLOSE {symbol} cat={category} qty={qty}")
+
+        try:
+            close_body = {
+                "category":    category,
+                "symbol":      symbol,
+                "side":        side,
+                "orderType":   "Market",
+                "qty":         str(qty),
+                "timeInForce": "IOC",
+            }
+            if category == "linear":
+                close_body["reduceOnly"]   = True
+                close_body["positionIdx"] = pos_idx
+
+            result = bybit_post("/v5/order/create", close_body, api_key, api_secret)
+            print(f"    CLOSE RESULT: {result.get('retCode')} {result.get('retMsg')}")
+            if result.get("retCode") != 0:
+                self.send_json(400, {"error": result.get("retMsg", "Close failed")})
+            else:
+                self.send_json(200, result.get("result", {}))
+        except Exception as e:
+            self.send_json(500, {"error": str(e)})
+
+    def handle_instrument(self, params):
+        """Get instrument info including min qty and step size — public endpoint"""
+        symbol   = params.get('symbol',   ['BTCUSDT'])[0].upper()
+        category = params.get('category', ['linear'])[0]
+        print(f"\n--- INSTRUMENT {symbol} cat={category}")
+        try:
+            url = f"{BASE_URL}/v5/market/instruments-info?category={category}&symbol={symbol}"
+            req = urllib.request.Request(url)
+            with urllib.request.urlopen(req, context=ssl_ctx, timeout=10) as r:
+                d = json.loads(r.read())
+            items = d.get("result", {}).get("list", [])
+            if not items:
+                self.send_json(404, {"error": f"Symbol {symbol} not found"})
+                return
+            item = items[0]
+            lot = item.get("lotSizeFilter", {})
+            price_filter = item.get("priceFilter", {})
+            result = {
+                "symbol":    symbol,
+                "category":  category,
+                "minQty":    safe_float(lot.get("minOrderQty", "0.001")),
+                "maxQty":    safe_float(lot.get("maxOrderQty", "9999999")),
+                "qtyStep":   safe_float(lot.get("qtyStep", "0.001")),
+                "minNotional": safe_float(lot.get("minNotionalValue", "1")),
+                "tickSize":  safe_float(price_filter.get("tickSize", "0.01")),
+            }
+            print(f"    INSTRUMENT: minQty={result['minQty']} qtyStep={result['qtyStep']} minNotional={result['minNotional']}")
+            self.send_json(200, result)
+        except Exception as e:
+            print(f"    INSTRUMENT ERROR: {e}")
+            self.send_json(500, {"error": str(e)})
+
+    def handle_kline(self, params):
+        """Fetch OHLCV candle data — uses PUBLIC Bybit endpoint, no auth needed"""
+        symbol   = params.get('symbol',   ['BTCUSDT'])[0].upper()
+        interval = params.get('interval', ['5'])[0]
+        limit    = params.get('limit',    ['200'])[0]
+        category = params.get('category', ['spot'])[0]
+        print(f"\n--- KLINE {symbol} {interval} limit={limit}")
+        try:
+            # Public endpoint — no signature needed
+            url = f"{BASE_URL}/v5/market/kline?category={category}&symbol={symbol}&interval={interval}&limit={limit}"
+            req = urllib.request.Request(url)
+            with urllib.request.urlopen(req, context=ssl_ctx, timeout=10) as r:
+                d = json.loads(r.read())
+            if d.get("retCode", 0) != 0:
+                raise Exception(d.get("retMsg", "Kline error"))
+            raw = d.get("result", {}).get("list", [])
+            raw = list(reversed(raw))  # Bybit returns newest first
+            candles, volumes = [], []
+            for c in raw:
+                ts    = int(c[0]) // 1000
+                open_ = safe_float(c[1])
+                high  = safe_float(c[2])
+                low   = safe_float(c[3])
+                close = safe_float(c[4])
+                vol   = safe_float(c[5])
+                if open_ <= 0 or close <= 0:
+                    continue
+                candles.append({"time": ts, "open": open_, "high": high, "low": low, "close": close})
+                volumes.append({"time": ts, "value": vol,
+                                "color": "rgba(0,229,160,0.3)" if close >= open_ else "rgba(255,61,107,0.3)"})
+            print(f"    KLINE: {len(candles)} candles OK")
+            self.send_json(200, {"candles": candles, "volumes": volumes, "symbol": symbol, "interval": interval})
+        except Exception as e:
+            print(f"    KLINE ERROR: {e}")
+            self.send_json(500, {"error": str(e)})
+
+    def handle_test(self, api_key, api_secret):
+        """Test API keys with multiple endpoints"""
+        results = {}
+        print(f"\n--- API KEY TEST (key={api_key[:8] if api_key else 'EMPTY'}...)")
+        try:
+            req = urllib.request.Request(f"{BASE_URL}/v5/market/time")
+            with urllib.request.urlopen(req, context=ssl_ctx, timeout=5) as r:
+                d = json.loads(r.read())
+                results["server_time"] = d.get("result", {}).get("timeSecond", "ok")
+                print(f"    Public API: OK")
+        except Exception as e:
+            results["server_time"] = f"FAIL: {e}"
+        for acct_type in ["UNIFIED", "SPOT"]:
+            try:
+                bybit_get("/v5/account/wallet-balance", {"accountType": acct_type}, api_key, api_secret)
+                results[f"auth_{acct_type}"] = "OK"
+                print(f"    Auth {acct_type}: OK")
+            except Exception as e:
+                results[f"auth_{acct_type}"] = str(e)
+                print(f"    Auth {acct_type}: FAIL — {e}")
+        self.send_json(200, results)
+
+    def handle_news(self, params):
+        """Fetch news from Alpaca data API — requires Alpaca keys, not Bybit keys"""
+        api_key    = params.get('key',     [''])[0]
+        secret_key = params.get('secret',  [''])[0]
+        symbols    = params.get('symbols', [''])[0]
+        limit      = params.get('limit',   ['10'])[0]
+        print(f"\n--- NEWS symbols={symbols}")
+        # If keys look like Bybit keys (not Alpaca format), skip silently
+        if not api_key.startswith('PK') and not api_key.startswith('AK'):
+            print(f"    NEWS: Skipping — Bybit keys don't work with Alpaca news API")
+            self.send_json(200, [])
+            return
+        url = f"{ALPACA_NEWS}/news?symbols={symbols}&limit={limit}&sort=desc"
+        req = urllib.request.Request(url)
+        req.add_header("APCA-API-KEY-ID", api_key)
+        req.add_header("APCA-API-SECRET-KEY", secret_key)
+        try:
+            with urllib.request.urlopen(req, context=ssl_ctx, timeout=10) as resp:
+                data = resp.read()
+                print(f"    NEWS: {resp.status} OK")
+                self.send_response(200)
+                self.send_cors()
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(data)
+        except Exception as e:
+            print(f"    NEWS ERROR: {e} — returning empty")
+            self.send_response(200)
+            self.send_cors()
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps([]).encode())
+
+    def handle_claude(self, api_key, api_secret, body):
+        claude_key = self.headers.get("X-API-Key", "")
+        print(f"\n--- CLAUDE request (key len={len(claude_key)})")
+        try:
+            data = json.dumps(body).encode()
+            req  = urllib.request.Request(CLAUDE_URL, data=data, method="POST")
+            req.add_header("Content-Type", "application/json")
+            req.add_header("x-api-key", claude_key)
+            req.add_header("anthropic-version", "2023-06-01")
+            with urllib.request.urlopen(req, context=ssl_ctx, timeout=30) as r:
+                result = r.read()
+                print(f"    CLAUDE: {r.status} OK")
+                self.send_response(200)
+                self.send_cors()
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(result)
+        except urllib.error.HTTPError as e:
+            data = e.read()
+            print(f"    CLAUDE ERROR: {e.code}")
+            self.send_response(e.code)
+            self.send_cors()
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(data)
+        except Exception as e:
+            self.send_json(500, {"error": str(e)})
+
+
+if __name__ == "__main__":
+    # Install websocket-client if needed
+    try:
+        import websocket
+    except ImportError:
+        import subprocess, sys
+        subprocess.check_call([sys.executable, "-m", "pip", "install",
+                               "websocket-client", "--break-system-packages", "-q"])
+        import websocket
+
+    mode = "DEMO (Paper Trading — no real money)" if USE_DEMO else "LIVE (Real Money ⚠)"
+    print("=" * 58)
+    print(f"  AlgoRhythm — Bybit Proxy")
+    print(f"  Mode: {mode}")
+    print(f"  URL:  {BASE_URL}")
+    print(f"  Running on http://localhost:{PORT}")
+    print(f"  Handles: Bybit Spot + Futures + WebSocket")
+    if USE_DEMO:
+        print(f"  ✅ DEMO MODE — safe to test, no real funds at risk")
+        print(f"  To switch to live: set USE_DEMO = False at top of file")
+    else:
+        print(f"  ⚠  WARNING: REAL MONEY — trades cost real funds")
+        print(f"  Start with small sizes to test.")
+    print(f"  Keep this window open while trading.")
+    print(f"  Press Ctrl+C to stop.")
+    print("=" * 58)
+
+    # Sync clock with Bybit server — fixes Windows clock drift (error 10002)
+    print("\n  Syncing clock with Bybit server...")
+    sync_bybit_time()
+    print()
+
+    # Re-sync every 10 minutes to handle ongoing drift
+    def _periodic_time_sync():
+        while True:
+            time.sleep(600)
+            sync_bybit_time()
+    threading.Thread(target=_periodic_time_sync, daemon=True).start()
+
+    server = HTTPServer(("0.0.0.0", PORT), BybitProxyHandler)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\n  Proxy stopped.")

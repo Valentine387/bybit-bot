@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: bybit-proxy
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bybit_proxy.py
+    healthCheckPath: /healthz
+    envVars:
+      - key: DEMO_MODE
+        value: "true"        # change to "false" for live trading
+      - key: PORT
+        generateValue: false
+    autoDeploy: true         # redeploys automatically when you push to GitHub
