@@ -279,6 +279,125 @@ body::before{content:'';position:fixed;inset:0;background-image:url("data:image/
 .news-wrap{max-height:180px;overflow-y:auto;}
 
 .disclaimer{margin-top:20px;font-size:10px;color:var(--muted);text-align:center;line-height:1.7;border-top:1px solid var(--border);padding-top:14px;font-family:var(--mono);}
+
+/* ══════════════════════════════════════════════════════════
+   MOBILE RESPONSIVE — phones and small tablets
+   ══════════════════════════════════════════════════════════ */
+
+/* ── Base app padding on mobile ── */
+@media(max-width:640px){
+  .app { padding: 12px 8px 90px; }
+
+  /* ── Header: stack brand + buttons vertically ── */
+  .dash-header { flex-direction:column; align-items:flex-start; gap:8px; margin-bottom:12px; }
+  .header-actions { width:100%; display:grid; grid-template-columns:1fr 1fr; gap:6px; }
+  .header-actions .hbtn { font-size:10px; padding:8px 6px; text-align:center; }
+  .bot-toggle { width:100% !important; grid-column:1/-1; padding:10px !important; font-size:13px !important; }
+
+  /* ── Stats: 2 columns on phone ── */
+  .stats-row { grid-template-columns: 1fr 1fr; gap:8px; }
+  .stat-card { padding:10px 12px; }
+  .stat-value { font-size:15px; }
+
+  /* ── Bot bar: wrap items ── */
+  .bot-bar { padding:8px 12px; gap:8px; }
+  .bot-status-text { font-size:10px; }
+  .countdown-wrap { margin-left:0; width:100%; justify-content:flex-end; }
+
+  /* ── Chart panel: single column, hide analysis + order book panels ── */
+  .chart-grid-3col { grid-template-columns:1fr !important; }
+  #analysisPanelWrapper { display:none !important; }
+  #orderBookWrapper { display:none !important; }
+
+  /* Chart header: stack items */
+  .chart-header-row { flex-direction:column; gap:8px; }
+  .chart-search-box { min-width:unset !important; width:100%; }
+  .chart-quick-coins { flex-wrap:wrap; }
+  .chart-price-row { flex-wrap:wrap; gap:6px; }
+  .chart-stats-row { display:none; } /* hide 24h high/low/vol on mobile */
+
+  /* Chart height: shorter on mobile */
+  #chartContainer { height:280px !important; min-height:280px !important; }
+  #tradingview_chart { height:280px !important; }
+
+  /* Timeframe buttons: scrollable row */
+  .tf-row { overflow-x:auto; white-space:nowrap; padding-bottom:4px; }
+  .tf-btn { font-size:9px; padding:3px 7px; }
+
+  /* ── Watchlist: tighter layout ── */
+  .add-ticker-row { flex-wrap:wrap; gap:4px; padding:8px; }
+  .add-ticker-row input[type=text] { width:80px; }
+  .add-ticker-row input[type=number] { width:60px; }
+  .add-ticker-row select { width:90px; }
+  .stock-row { grid-template-columns:1fr auto auto; gap:4px; padding:8px 10px; }
+  .sr-meta { flex-wrap:wrap; gap:3px; }
+  .sr-size-badge,.sr-tp-badge,.sr-sl-badge { font-size:8px; }
+  .sig-pill { font-size:8px; padding:2px 5px; min-width:45px; }
+
+  /* ── Panels: full width ── */
+  .main-grid { grid-template-columns:1fr !important; }
+  .bottom-grid { grid-template-columns:1fr !important; }
+
+  /* ── Recommendations panel ── */
+  #recBody { max-height:300px; }
+  .rec-tick-btn { font-size:8px; padding:2px 5px; }
+  .rec-card { padding:10px 12px; }
+  .rec-actions { flex-wrap:wrap; gap:4px; }
+  .rec-btn-long,.rec-btn-short,.rec-btn-add { font-size:9px; padding:4px 8px; }
+
+  /* ── Trade log: shorter ── */
+  .log-wrap { max-height:160px; }
+  .log-msg { font-size:10px; }
+
+  /* ── Modals: full screen on mobile ── */
+  .modal-box { width:95vw !important; padding:16px !important; max-height:90vh; overflow-y:auto; }
+  .contact-box { width:95vw !important; padding:16px; }
+
+  /* ── Apply-to-all modal ── */
+  #applyAllModal .modal-box { width:96vw !important; }
+  .form-row { flex-direction:column; }
+
+  /* ── Signal popups: full width bottom ── */
+  [id^="signal-"] { 
+    left:8px !important; right:8px !important; 
+    bottom:50px !important; width:auto !important; 
+  }
+
+  /* ── Ticker bar: smaller text ── */
+  #tickerBar { height:30px; }
+  #tickerBar > div:first-child { display:none; } /* hide label on mobile */
+
+  /* ── Setup screen ── */
+  .setup-form { padding:16px; }
+  .setup-title { font-size:24px; }
+
+  /* ── Proxy indicator: shorter label ── */
+  #proxyIndicator { font-size:8px; padding:2px 5px; }
+
+  /* ── Closed trades + news feed ── */
+  #closedTradesPanel { max-height:300px; }
+  .news-wrap { max-height:200px; }
+}
+
+/* ── Medium screens: tablets (641–900px) ── */
+@media(min-width:641px) and (max-width:900px){
+  .stats-row { grid-template-columns: repeat(3,1fr); }
+  .chart-grid-3col { grid-template-columns:1fr 240px !important; }
+  #orderBookWrapper { display:none !important; }
+  #chartContainer { height:340px !important; min-height:340px !important; }
+  #tradingview_chart { height:340px !important; }
+  .header-actions { flex-wrap:wrap; gap:6px; }
+  .bottom-grid { grid-template-columns:1fr !important; }
+}
+
+/* ── Touch-friendly: larger tap targets ── */
+@media(hover:none) and (pointer:coarse){
+  .sbtn,.hbtn,.tf-btn,.rec-tick-btn { min-height:34px; }
+  .rm-btn,.edit-btn { font-size:18px; padding:4px 8px; }
+  .close-btn { padding:6px 12px; }
+  select,input { font-size:16px !important; } /* prevents iOS zoom on focus */
+}
+
 </style>
 <!-- TradingView Chart Widget — same chart engine Bybit uses -->
 <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
@@ -371,7 +490,7 @@ body::before{content:'';position:fixed;inset:0;background-image:url("data:image/
 </div>
 
 <!-- ══ DASHBOARD ══ -->
-<div id="dashboard">
+<div id="dashboard"><div id="dashboard-top"></div>
   <div class="dash-header">
     <div class="dash-brand">
       <div class="live-dot"></div>
@@ -387,6 +506,7 @@ body::before{content:'';position:fixed;inset:0;background-image:url("data:image/
       <button class="hbtn" onclick="togglePopupSignals()" id="popupToggleBtn" style="color:var(--green);border-color:rgba(34,197,94,0.3)">⚡ Signals ON</button>
       <button class="hbtn" onclick="openContact('General')" style="color:var(--blue);border-color:rgba(77,143,255,0.3)">📧 Support</button>
       <button class="hbtn danger" onclick="closeAllPositions()">Close All</button>
+      <button class="hbtn" onclick="if(confirm('Sign out and clear saved session?')){localStorage.removeItem('at_credentials');location.reload();}" title="Sign out on this device" style="font-size:10px;padding:5px 10px">🔓 Sign Out</button>
       <button class="bot-toggle stopped" id="botToggle" onclick="toggleBot()">▶ Start Bot</button>
     </div>
   </div>
@@ -420,13 +540,13 @@ body::before{content:'';position:fixed;inset:0;background-image:url("data:image/
   </div>
 
   <!-- ══ CHART DASHBOARD — FULL WIDTH ══ -->
-  <div class="panel" style="margin-bottom:14px;border-radius:0;border-left:none;border-right:none;">
+  <div id="chartSection" class="panel" style="margin-bottom:14px;border-radius:0;border-left:none;border-right:none;">
 
     <!-- Coin search bar + header -->
     <div style="display:flex;align-items:center;gap:14px;padding:10px 16px;border-bottom:1px solid var(--border);flex-wrap:wrap">
 
       <!-- Coin search input -->
-      <div style="display:flex;align-items:center;gap:8px;background:var(--card2);border:1px solid var(--border2);border-radius:9px;padding:6px 12px;min-width:180px">
+      <div class="chart-search-box" style="display:flex;align-items:center;gap:8px;background:var(--card2);border:1px solid var(--border2);border-radius:9px;padding:6px 12px;min-width:180px">
         <div style="width:28px;height:28px;background:linear-gradient(135deg,rgba(34,197,94,0.2),rgba(59,130,246,0.2));border-radius:50%;border:1px solid var(--border2);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;color:#fff;flex-shrink:0" id="chartCoinIcon">₿</div>
         <input
           id="chartSearchInput"
@@ -469,7 +589,7 @@ body::before{content:'';position:fixed;inset:0;background-image:url("data:image/
 
     <!-- Timeframe buttons -->
     <div style="display:flex;align-items:center;padding:0 12px;background:var(--surface);border-bottom:1px solid var(--border)">
-      <div style="display:flex;gap:2px;padding:4px 0">
+      <div class="tf-row" style="display:flex;gap:2px;padding:4px 0">
         <button onclick="switchTF('1')"   class="tf-btn" id="tf-1">1m</button>
         <button onclick="switchTF('5')"   class="tf-btn" id="tf-5">5m</button>
         <button onclick="switchTF('15')"  class="tf-btn" id="tf-15">15m</button>
@@ -488,7 +608,7 @@ body::before{content:'';position:fixed;inset:0;background-image:url("data:image/
     </div>
 
     <!-- Chart + Analysis Panel + Order Book -->
-    <div style="display:grid;grid-template-columns:1fr 280px 240px;height:460px">
+    <div class="chart-grid-3col" style="display:grid;grid-template-columns:1fr 280px 240px;height:460px">
 
       <!-- ── LIVE ANALYSIS PANEL ── -->
       <!-- Sits between chart and order book — shows real-time scan results -->
@@ -509,7 +629,7 @@ body::before{content:'';position:fixed;inset:0;background-image:url("data:image/
       </div>
 
       <!-- Live Analysis Panel -->
-      <div style="display:flex;flex-direction:column;background:var(--surface);border-right:1px solid var(--border);overflow:hidden">
+      <div id="analysisPanelWrapper" style="display:flex;flex-direction:column;background:var(--surface);border-right:1px solid var(--border);overflow:hidden">
         <!-- Panel Header -->
         <div style="padding:6px 10px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;flex-shrink:0">
           <span style="font-family:var(--mono);font-size:10px;font-weight:700;color:#fff">🤖 LIVE ANALYSIS</span>
@@ -530,7 +650,7 @@ body::before{content:'';position:fixed;inset:0;background-image:url("data:image/
 
       <!-- Order Book — for chart coin -->
 
-      <div style="display:flex;flex-direction:column;overflow:hidden">
+      <div id="orderBookWrapper" style="display:flex;flex-direction:column;overflow:hidden">
         <!-- Tabs -->
         <div style="display:flex;border-bottom:1px solid var(--border);background:var(--surface)">
           <button class="ob-tab active" id="obTab-book"   onclick="switchOBTab('book')">Book</button>
@@ -606,7 +726,7 @@ body::before{content:'';position:fixed;inset:0;background-image:url("data:image/
   </div>
 
   <!-- ══ WATCHLIST — full width below chart ══ -->
-  <div class="panel" style="margin-bottom:14px">
+  <div id="watchlistSection" class="panel" style="margin-bottom:14px">
     <div class="panel-head">
       <span class="panel-title">Watchlist</span>
       <div style="display:flex;gap:6px;align-items:center">
@@ -667,7 +787,7 @@ body::before{content:'';position:fixed;inset:0;background-image:url("data:image/
   <!-- ══ RECOMMENDATIONS + CLOSED TRADES ══ -->
   <div class="bottom-grid">
 
-    <div class="panel">
+    <div id="recSection" class="panel">
       <div class="panel-head">
         <span class="panel-title">🔥 Trade Recommendations</span>
         <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
@@ -1166,7 +1286,7 @@ const ALPACA = 'https://paper-api.alpaca.markets/v2';
 // ── Proxy URL — auto-detects local vs hosted ─────────────────────────
 // When running locally: uses localhost:8766
 // When hosted on GitHub Pages: uses your Render proxy URL
-const RENDER_PROXY = 'https://bybit-proxy-h8ke.onrender.com'; // ← REPLACE after Render deploy
+const RENDER_PROXY = 'https://bybit-proxy-h8ke.onrender.com';
 const IS_LOCAL     = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
 const PROXY        = IS_LOCAL ? 'http://127.0.0.1:8766' : RENDER_PROXY;
 const EXCHANGE = 'bybit';
@@ -1216,6 +1336,70 @@ function saveState() {
     localStorage.setItem('at_closedTrades', JSON.stringify(closedTrades.slice(0,100)));
     localStorage.setItem('at_logEntries', JSON.stringify(logEntries.slice(0,100)));
   } catch(e) { /* storage full or blocked */ }
+}
+
+function saveCredentials() {
+  // Save API keys + settings so any device auto-reconnects
+  try {
+    const creds = {
+      apiKey:     cfg.apiKey,
+      secretKey:  cfg.secretKey,
+      tradingMode: cfg.tradingMode,
+      defaultSize: cfg.defaultSize,
+      defaultTP:   cfg.defaultTP,
+      defaultSLCrypto: cfg.defaultSLCrypto,
+      shortingEnabled:   cfg.shortingEnabled,
+      pyramidingEnabled: cfg.pyramidingEnabled,
+      alpacaNewsKey:    cfg.alpacaNewsKey,
+      alpacaNewsSecret: cfg.alpacaNewsSecret,
+    };
+    localStorage.setItem('at_credentials', JSON.stringify(creds));
+  } catch(e) {}
+}
+
+async function autoConnectIfSaved() {
+  // On page load, if credentials are saved → auto-connect (works on phone, tablet, any browser)
+  try {
+    const saved = localStorage.getItem('at_credentials');
+    if (!saved) return;
+    const creds = JSON.parse(saved);
+    if (!creds.apiKey || !creds.secretKey) return;
+
+    // Pre-fill the form
+    const apiKeyEl    = document.getElementById('apiKey');
+    const secretKeyEl = document.getElementById('secretKey');
+    if (apiKeyEl)    apiKeyEl.value    = creds.apiKey;
+    if (secretKeyEl) secretKeyEl.value = creds.secretKey;
+
+    const tmEl = document.getElementById('tradingMode');
+    if (tmEl && creds.tradingMode) tmEl.value = creds.tradingMode;
+
+    const sizeEl = document.getElementById('defaultSize');
+    if (sizeEl && creds.defaultSize) sizeEl.value = creds.defaultSize;
+
+    const tpEl = document.getElementById('defaultTP');
+    if (tpEl && creds.defaultTP) tpEl.value = creds.defaultTP;
+
+    const slEl = document.getElementById('defaultSLCrypto');
+    if (slEl && creds.defaultSLCrypto) slEl.value = creds.defaultSLCrypto;
+
+    // Show auto-connect banner
+    const banner = document.createElement('div');
+    banner.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:999;background:rgba(0,229,160,0.15);border-bottom:1px solid rgba(0,229,160,0.3);padding:10px 16px;font-family:var(--mono);font-size:12px;color:var(--green);display:flex;align-items:center;justify-content:space-between;';
+    banner.innerHTML = `
+      <span>🔑 Saved session found — reconnecting automatically...</span>
+      <button onclick="this.parentNode.remove()" style="background:none;border:none;color:var(--green);cursor:pointer;font-size:16px">✕</button>
+    `;
+    document.body.appendChild(banner);
+
+    // Auto-connect
+    await connect();
+    setTimeout(() => { if (banner.parentNode) banner.remove(); }, 3000);
+
+  } catch(e) {
+    // Silently fail — user will just see the login form
+    console.log('Auto-connect failed:', e.message);
+  }
 }
 
 function loadState() {
@@ -1378,6 +1562,7 @@ async function connect() {
     loadState();
     const wlModeEl = document.getElementById('wlMode');
     if (wlModeEl) wlModeEl.value = tradingMode;
+    saveCredentials(); // Save so any device auto-reconnects next time
     log('INFO', `✅ Connected to Bybit LIVE account.`);
     log('INFO', `Equity: ${fmt(acct.equity)} USDT | Mode: ${tradingMode.toUpperCase()}`);
     log('INFO', cfg.alpacaNewsKey ? `📰 News: Alpaca/Benzinga feed active` : `📰 News: Claude-only (add Alpaca keys for live headlines)`);
@@ -4275,6 +4460,9 @@ function updateTradeModalSummary(price) {
 
 // Wire up live updates to summary
 document.addEventListener('DOMContentLoaded', () => {
+  // Auto-connect if credentials saved from a previous session / other device
+  autoConnectIfSaved();
+
   ['levSlider','tradeValue','tradeValuePct','tradeTp','tradeSl'].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.addEventListener('input', () => updateTradeModalSummary(0));
@@ -5340,5 +5528,41 @@ document.head.appendChild(signalStyle);
 setTimeout(scanForPrePumpSignals, 5000); // first scan 5s after load
 setInterval(scanForPrePumpSignals, 3 * 60 * 1000); // then every 3 mins
 </script>
+
+<!-- ── Mobile Bottom Navigation ── -->
+<div id="mobileNav" style="display:none;position:fixed;bottom:34px;left:0;right:0;background:rgba(7,8,13,0.97);border-top:1px solid rgba(255,255,255,0.08);backdrop-filter:blur(12px);z-index:60;padding:6px 0;">
+  <div style="display:flex;justify-content:space-around;align-items:center">
+    <button onclick="mobileScrollTo('dashboard-top')" style="display:flex;flex-direction:column;align-items:center;gap:2px;background:none;border:none;color:var(--muted2);cursor:pointer;padding:4px 8px;font-family:var(--mono);font-size:8px;">
+      <span style="font-size:16px">📊</span>Stats
+    </button>
+    <button onclick="mobileScrollTo('chartSection')" style="display:flex;flex-direction:column;align-items:center;gap:2px;background:none;border:none;color:var(--muted2);cursor:pointer;padding:4px 8px;font-family:var(--mono);font-size:8px;">
+      <span style="font-size:16px">📈</span>Chart
+    </button>
+    <button onclick="toggleBot()" style="display:flex;flex-direction:column;align-items:center;gap:2px;background:none;border:none;color:var(--green);cursor:pointer;padding:4px 8px;font-family:var(--mono);font-size:8px;">
+      <span style="font-size:16px">🤖</span>Bot
+    </button>
+    <button onclick="mobileScrollTo('watchlistSection')" style="display:flex;flex-direction:column;align-items:center;gap:2px;background:none;border:none;color:var(--muted2);cursor:pointer;padding:4px 8px;font-family:var(--mono);font-size:8px;">
+      <span style="font-size:16px">👁</span>Watch
+    </button>
+    <button onclick="mobileScrollTo('recSection')" style="display:flex;flex-direction:column;align-items:center;gap:2px;background:none;border:none;color:var(--amber);cursor:pointer;padding:4px 8px;font-family:var(--mono);font-size:8px;">
+      <span style="font-size:16px">🔥</span>Signals
+    </button>
+  </div>
+</div>
+
+<style>
+@media(max-width:640px){
+  #mobileNav { display:block !important; }
+  #dashboard { padding-bottom:90px !important; }
+}
+</style>
+
+<script>
+function mobileScrollTo(id) {
+  const el = document.getElementById(id);
+  if (el) el.scrollIntoView({ behavior:'smooth', block:'start' });
+}
+</script>
+
 </body>
 </html>
