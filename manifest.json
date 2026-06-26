@@ -1,0 +1,35 @@
+{
+  "name": "AlgoRhythm — Bybit Bot",
+  "short_name": "AlgoRhythm",
+  "description": "AI-powered crypto trading bot for Bybit — signals, auto-trade, live positions",
+  "start_url": "/bybit-bot/",
+  "scope": "/bybit-bot/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#07080c",
+  "theme_color": "#00e5a0",
+  "categories": ["finance", "utilities"],
+  "icons": [
+    {
+      "src": "icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Open Bot",
+      "short_name": "Bot",
+      "description": "Open AlgoRhythm trading bot",
+      "url": "/bybit-bot/",
+      "icons": [{ "src": "icon-192.png", "sizes": "192x192" }]
+    }
+  ]
+}
