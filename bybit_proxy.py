@@ -970,10 +970,11 @@ def _bybit_request(method, path, params=None, body=None, api_key=None, api_secre
         print(f'  [AutoTrader] API error {path}: {e}')
         return None
 
-def _get_klines(symbol, interval, limit=100):
+def _get_klines(symbol, interval, limit=100, category=None):
     """Fetch candles from Bybit"""
     try:
-        url = f'{BASE_URL}/v5/market/kline?symbol={symbol}&interval={interval}&limit={limit}&category={_auto_creds["trading_mode"]}'
+        cat = category or (_auto_creds['trading_mode'] if symbol.endswith('USDT') else 'spot')
+        url = f'{BASE_URL}/v5/market/kline?symbol={symbol}&interval={interval}&limit={limit}&category={cat}'
         req = urllib.request.Request(url, headers={'User-Agent':'AlgoRhythm/1.0'})
         with urllib.request.urlopen(req, timeout=10) as r:
             d = json.loads(r.read())
@@ -1046,11 +1047,13 @@ def _check_regime():
     except Exception as e:
         return _last_regime
 
-def _scan_symbol(symbol):
+def _scan_symbol(symbol, category=None):
     """Run AlgoRhythm 4-condition check on a symbol server-side"""
     try:
-        c30m = _get_klines(symbol,'30',100)
-        c4h  = _get_klines(symbol,'240',60)
+        # Determine category: non-USDT pairs use spot, USDT pairs use configured mode
+        cat = category or (_auto_creds['trading_mode'] if symbol.endswith('USDT') else 'spot')
+        c30m = _get_klines(symbol,'30',100, category=cat)
+        c4h  = _get_klines(symbol,'240',60, category=cat)
         if not c30m or len(c30m)<30: return None
         closes=[c['close'] for c in c30m]
         n=len(closes)
@@ -1099,17 +1102,32 @@ def _scan_symbol(symbol):
         rsi_ok=(direction==1 and rsi<60) or (direction==-1 and rsi>40)
         if rsi_ok: score+=10
         score=min(100,score)
-        return {'symbol':symbol,'direction':direction,'score':score,'adx':adx,'rsi':rsi,'price':cur}
+        return {'symbol':symbol,'direction':direction,'score':score,'adx':adx,'rsi':rsi,'price':cur,'category':cat}
     except Exception as e:
         return None
 
 SCAN_SYMBOLS = [
-    'BTCUSDT','ETHUSDT','SOLUSDT','XRPUSDT','DOGEUSDT','BNBUSDT',
-    'ADAUSDT','AVAXUSDT','LINKUSDT','DOTUSDT','UNIUSDT','LTCUSDT',
-    'NEARUSDT','INJUSDT','ARBUSDT','OPUSDT','SUIUSDT','APTUSDT',
-    'TONUSDT','HYPEUSDT','PEPEUSDT','SHIBUSDT','WIFUSDT','BONKUSDT',
-    'TRXUSDT','XLMUSDT','ATOMUSDT','FILUSDT','RENDERUSDT','FETUSDT',
+    'BTCUSDT', 'ETHUSDT', 'USDCUSDT', 'HYPEUSDT', 'SOLUSDT', 'XRPUSDT',
+    'HUSDT', 'WLDUSDT', 'SAHARAUSDT', 'MNTUSDT', 'BILLUSDT', 'VIRTUALUSDT',
+    'ADAUSDT', 'LITUSDT', 'LTCUSDT', 'NEARUSDT', 'TONUSDT', 'MONUSDT',
+    'XAUTUSDT', 'HOLOUSDT', 'ASTERUSDT', 'AVAXUSDT', 'ONDOUSDT', 'USD1USDT',
+    'ENAUSDT', 'VVVUSDT', 'DOGEUSDT', 'XPLUSDT', 'SUIUSDT', 'IPUSDT',
+    'LINKUSDT', 'CCUSDT', 'AAVEUSDT', 'BSBUSDT', 'USDEUSDT', 'BBSOLUSDT',
+    'BNBUSDT', 'XLMUSDT', 'TRXUSDT', 'PEPEUSDT', 'SHIBUSDT', 'DOTUSDT',
+    'UNIUSDT', 'APTUSDT', 'ARBUSDT', 'OPUSDT', 'FILUSDT', 'ATOMUSDT',
+    'INJUSDT', 'TIAUSDT', 'FETUSDT', 'RENDERUSDT', 'WIFUSDT', 'BONKUSDT',
+    'FLOKIUSDT', 'POPCATUSDT', 'MEWUSDT', 'BRETTUSDT', 'PENDLEUSDT', 'IMXUSDT',
+    'THETAUSDT', 'GALAUSDT', 'ALGOUSDT', 'VETUSDT', 'HBARUSDT', 'XMRUSDT',
+    'EOSUSDT', 'BCHUSDT', 'ETCUSDT', 'ZECUSDT', 'KASUSDT', 'CFXUSDT',
+    'STXUSDT', 'SEIUSDT', 'BEAMUSDT', 'FTMUSDT', 'SANDUSDT', 'MANAUSDT',
+    'AXSUSDT', 'CRVUSDT', 'MKRUSDT', 'LDOUSDT', 'SNXUSDT', 'COMPUSDT',
+    'GMXUSDT', 'DYDXUSDT', 'RUNEUSDT', 'KSMUSDT',
 ]
+SPOT_SCAN_SYMBOLS = [
+    'ETHEUR', 'BTCEUR', 'BTCUSDC', 'USDTEUR', 'USDTBRL', 'ETHUSDC',
+    'XRPEUR', 'HMNT', 'ETHBTC', 'SOLEUR', 'USDCEUR', 'BBSOLUSDC',
+]
+
 
 def _get_positions():
     """Fetch open positions from Bybit"""
@@ -1126,10 +1144,10 @@ def _get_positions():
     except: pass
     return _open_positions
 
-def _place_order(symbol, side, size, price):
+def _place_order(symbol, side, size, price, category=None):
     """Place a market order on Bybit"""
     try:
-        mode=_auto_creds['trading_mode']
+        mode = category or (_auto_creds['trading_mode'] if symbol.endswith('USDT') else 'spot')
         # Get instrument info for qty step
         info_r=_bybit_request('GET','/v5/market/instruments-info',{'category':mode,'symbol':symbol})
         qty_step=0.001
@@ -1177,7 +1195,8 @@ def _auto_trading_loop():
                 time.sleep(60)
                 continue
 
-            print(f'  [AutoTrader] 🔍 Scanning {len(SCAN_SYMBOLS)} symbols...')
+            total_syms = len(SCAN_SYMBOLS) + len(SPOT_SCAN_SYMBOLS)
+            print(f'  [AutoTrader] 🔍 Scanning {total_syms} symbols ({len(SCAN_SYMBOLS)} futures + {len(SPOT_SCAN_SYMBOLS)} spot)...')
 
             # Check market regime
             regime=_check_regime()
@@ -1195,15 +1214,16 @@ def _auto_trading_loop():
                 time.sleep(scan_interval)
                 continue
 
-            # Scan all symbols
+            # Scan all symbols — USDT futures + spot pairs
             signals=[]
-            for sym in SCAN_SYMBOLS:
+            all_scan = [(s,'linear') for s in SCAN_SYMBOLS] + [(s,'spot') for s in SPOT_SCAN_SYMBOLS]
+            for sym, cat in all_scan:
                 if sym in positions:
                     continue  # already in position
-                result=_scan_symbol(sym)
+                result=_scan_symbol(sym, category=cat)
                 if result and result['direction'] in allowed_dirs:
                     signals.append(result)
-                time.sleep(0.3)  # rate limit
+                time.sleep(0.25)  # rate limit
 
             if not signals:
                 print(f'  [AutoTrader] No qualifying signals this scan (regime={regime})')
@@ -1229,7 +1249,7 @@ def _auto_trading_loop():
                 side='Buy' if sig['direction']==1 else 'Sell'
                 size=_auto_creds['trade_size']
                 print(f'  [AutoTrader] 🔥 {sym} {side} {sig["score"]:.0f}% ADX={sig["adx"]:.0f} RSI={sig["rsi"]:.0f}')
-                if _place_order(sym, side, size, sig['price']):
+                if _place_order(sym, side, size, sig['price'], category=sig.get('category','linear')):
                     trades_this_cycle+=1
                     time.sleep(1)
 
