@@ -1539,19 +1539,48 @@ function updateServerStatusBadge(enabled) {
 }
 
 async function toggleServerAutoTrading() {
+  const badge = document.getElementById('serverStatusBadge');
+  if (badge) { badge.textContent = '🖥️ Connecting...'; badge.style.color = 'var(--amber)'; }
+
+  // Step 1: check if the new proxy endpoints exist
   try {
-    // First push current credentials
+    const statusCheck = await fetch(`${PROXY}/auto-status`, { signal: AbortSignal.timeout(5000) });
+    if (!statusCheck.ok) throw new Error(`Proxy returned ${statusCheck.status}`);
+    const status = await statusCheck.json();
+
+    if (!status.hasOwnProperty('auto_enabled')) {
+      // Old proxy — doesn't support server-side trading yet
+      log('ERR', '🖥️ Proxy needs updating — upload the new bybit_proxy.py to GitHub and redeploy on Render');
+      if (badge) { badge.textContent = '🖥️ UPDATE PROXY'; badge.style.color = 'var(--red)'; badge.style.borderColor = 'var(--red-b)'; badge.style.background = 'var(--red-d)'; }
+      return;
+    }
+
+    // Step 2: push credentials to server
     await pushCredentialsToServer();
+
+    // Step 3: toggle
     const r = await fetch(`${PROXY}/auto-toggle`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({})
     });
+    if (!r.ok) throw new Error(`Toggle returned ${r.status}`);
     const d = await r.json();
     updateServerStatusBadge(d.auto_enabled);
-    log('INFO', `🖥️ Server auto-trading: ${d.auto_enabled ? 'ON ✅ — bot trades 24/7 on Render without browser' : 'OFF — server scanning paused'}`);
+    if (d.auto_enabled) {
+      log('INFO', '🖥️ SERVER AUTO-TRADING ON ✅ — bot will scan and trade 24/7 on Render even when browser is closed');
+    } else {
+      log('INFO', '🖥️ Server auto-trading OFF — click badge to re-enable');
+    }
   } catch(e) {
-    log('ERR', `Server toggle failed: ${e.message} — make sure proxy is updated and redeployed`);
+    // Likely old proxy without endpoints
+    if (e.message.includes('404') || e.message.includes('Failed to fetch') || e.message.includes('NetworkError')) {
+      log('ERR', '🖥️ Cannot reach proxy — make sure bybit_proxy.py (latest version) is deployed on Render');
+      if (badge) { badge.textContent = '🖥️ PROXY ERROR'; badge.style.color = 'var(--red)'; badge.style.borderColor = 'var(--red-b)'; badge.style.background = 'var(--red-d)'; }
+    } else {
+      log('ERR', `🖥️ Server toggle: ${e.message} — try uploading the new bybit_proxy.py to GitHub`);
+      if (badge) { badge.textContent = '🖥️ SERVER OFF'; badge.style.color = 'var(--muted2)'; badge.style.borderColor = 'var(--border2)'; badge.style.background = 'transparent'; }
+    }
   }
 }
 
