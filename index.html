@@ -317,25 +317,46 @@ body::before{content:'';position:fixed;inset:0;background-image:url("data:image/
   .bot-status-text { font-size:10px; }
   .countdown-wrap { margin-left:0; width:100%; justify-content:flex-end; }
 
-  /* ── Chart panel: single column, hide analysis + order book panels ── */
-  .chart-grid-3col { grid-template-columns:1fr !important; }
+  /* ── Mobile: Bybit-style tabbed chart layout ── */
+  .chart-grid-3col { grid-template-columns:1fr !important; height:auto !important; }
   #analysisPanelWrapper { display:none !important; }
   #orderBookWrapper { display:none !important; }
 
-  /* Chart header: stack items */
-  .chart-header-row { flex-direction:column; gap:8px; }
-  .chart-search-box { min-width:unset !important; width:100%; }
-  .chart-quick-coins { flex-wrap:wrap; }
-  .chart-price-row { flex-wrap:wrap; gap:6px; }
-  .chart-stats-row { display:none; } /* hide 24h high/low/vol on mobile */
+  /* Hide desktop chart panel border/padding on mobile */
+  #chartSection { border-radius:0 !important; border-left:none !important; border-right:none !important; }
 
   /* Chart height: shorter on mobile */
-  #chartContainer { height:280px !important; min-height:280px !important; }
-  #tradingview_chart { height:280px !important; }
+  #chartContainer { height:260px !important; min-height:260px !important; }
+  #tradingview_chart { height:260px !important; }
 
   /* Timeframe buttons: scrollable row */
-  .tf-row { overflow-x:auto; white-space:nowrap; padding-bottom:4px; }
+  .tf-row { overflow-x:auto; white-space:nowrap; padding-bottom:2px; -webkit-overflow-scrolling:touch; }
   .tf-btn { font-size:9px; padding:3px 7px; }
+
+  /* Hide 24h stats row on mobile */
+  .chart-stats-row { display:none; }
+
+  /* Mobile tab bar — Bybit style below chart */
+  #mobileChartTabs {
+    display:flex !important;
+    border-bottom:1px solid var(--border);
+    background:var(--surface);
+    overflow-x:auto;
+    -webkit-overflow-scrolling:touch;
+  }
+  .mob-tab {
+    font-family:var(--mono);font-size:11px;padding:10px 16px;
+    background:transparent;border:none;border-bottom:2px solid transparent;
+    color:var(--muted2);cursor:pointer;white-space:nowrap;flex-shrink:0;
+  }
+  .mob-tab.active { color:#fff; border-bottom-color:var(--green); }
+
+  /* Mobile tab panels */
+  #mobPanel-chart { display:block; }
+  #mobPanel-book  { display:none; background:var(--surface); }
+  #mobPanel-pos   { display:none; background:var(--surface); }
+  #mobPanel-signals { display:none; background:var(--surface); }
+  #mobPanel-trades  { display:none; background:var(--surface); }
 
   /* ── Watchlist: tighter layout ── */
   .add-ticker-row { flex-wrap:wrap; gap:4px; padding:8px; }
@@ -738,6 +759,92 @@ body::before{content:'';position:fixed;inset:0;background-image:url("data:image/
         </div>
       </div>
     </div>
+  </div>
+
+  <!-- ══ MOBILE TABS — Bybit-style (only visible on mobile) ══ -->
+  <div id="mobileChartTabs" style="display:none;">
+    <button class="mob-tab active" onclick="switchMobTab('chart')">📈 Chart</button>
+    <button class="mob-tab" onclick="switchMobTab('book')">📖 Book</button>
+    <button class="mob-tab" onclick="switchMobTab('pos')">💼 Positions</button>
+    <button class="mob-tab" onclick="switchMobTab('signals')">🔥 Signals</button>
+    <button class="mob-tab" onclick="switchMobTab('trades')">📊 Trades</button>
+  </div>
+
+  <!-- Mobile: Order Book panel -->
+  <div id="mobPanel-book" style="display:none;min-height:400px;">
+    <div style="padding:8px 12px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center">
+      <span style="font-family:var(--mono);font-size:10px;color:var(--muted2)">ORDER BOOK</span>
+      <span style="font-family:var(--mono);font-size:10px;color:var(--amber)" id="mobBookSymbol">BTCUSDT</span>
+    </div>
+    <!-- Buy/Sell ratio -->
+    <div style="padding:6px 12px;border-bottom:1px solid var(--border)">
+      <div style="display:flex;justify-content:space-between;font-family:var(--mono);font-size:10px;margin-bottom:4px">
+        <span style="color:var(--green)" id="mobObBuyPct">B 50%</span>
+        <span style="color:var(--red)" id="mobObSellPct">50% S</span>
+      </div>
+      <div style="height:4px;border-radius:2px;overflow:hidden;display:flex">
+        <div id="mobObBuyBar" style="height:100%;width:50%;background:var(--green);transition:width 0.3s"></div>
+        <div id="mobObSellBar" style="height:100%;width:50%;background:var(--red);transition:width 0.3s"></div>
+      </div>
+    </div>
+    <!-- Headers -->
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;padding:4px 12px;font-family:var(--mono);font-size:9px;color:var(--muted);border-bottom:1px solid var(--border)">
+      <span>Price</span><span style="text-align:center">Qty</span><span style="text-align:right">Total</span>
+    </div>
+    <!-- Asks -->
+    <div id="mobObAsks" style="min-height:160px;display:flex;flex-direction:column;justify-content:flex-end"></div>
+    <!-- Mid price -->
+    <div style="padding:8px 12px;border-top:1px solid var(--border);border-bottom:1px solid var(--border);background:var(--card2);display:flex;justify-content:space-between">
+      <span style="font-family:var(--mono);font-size:16px;font-weight:700;color:#fff" id="mobObMid">—</span>
+      <span style="font-family:var(--mono);font-size:10px;color:var(--muted);align-self:center" id="mobObSpread">—</span>
+    </div>
+    <!-- Bids -->
+    <div id="mobObBids" style="min-height:160px"></div>
+    <!-- Quick trade -->
+    <div style="padding:10px 12px;border-top:1px solid var(--border);background:var(--surface)">
+      <div style="display:flex;gap:6px;margin-bottom:8px">
+        <input type="number" id="mobTradeSize" value="20" style="flex:1;background:var(--card2);border:1px solid var(--border2);border-radius:6px;padding:8px;color:#fff;font-family:var(--mono);font-size:13px;outline:none"/>
+        <select id="mobTradeLev" style="width:80px;background:var(--card2);border:1px solid var(--border2);border-radius:6px;padding:8px;color:#fff;font-family:var(--mono);font-size:12px;outline:none">
+          <option value="1">×1</option><option value="3">×3</option><option value="5">×5</option><option value="10">×10</option>
+        </select>
+      </div>
+      <div style="display:flex;gap:8px">
+        <button onclick="mobQuickBuy()" style="flex:1;padding:14px;background:var(--green-d);border:1px solid var(--green-b);color:var(--green);border-radius:10px;font-family:var(--mono);font-size:14px;font-weight:700;cursor:pointer">▲ Long</button>
+        <button onclick="mobQuickSell()" style="flex:1;padding:14px;background:var(--red-d);border:1px solid var(--red-b);color:var(--red);border-radius:10px;font-family:var(--mono);font-size:14px;font-weight:700;cursor:pointer">▼ Short</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Mobile: Positions panel -->
+  <div id="mobPanel-pos" style="display:none;min-height:300px;">
+    <div style="padding:10px 12px;border-bottom:1px solid var(--border);font-family:var(--mono);font-size:10px;color:var(--muted2)">OPEN POSITIONS</div>
+    <div id="mobPosBody"><div class="empty-state">No open positions</div></div>
+    <div style="padding:10px 12px;border-top:1px solid var(--border)">
+      <button onclick="closeAllPositions()" style="width:100%;padding:12px;background:var(--red-d);border:1px solid var(--red-b);color:var(--red);border-radius:8px;font-family:var(--mono);font-size:12px;cursor:pointer">Close All Positions</button>
+    </div>
+  </div>
+
+  <!-- Mobile: Signals panel -->
+  <div id="mobPanel-signals" style="display:none;min-height:300px;">
+    <div style="padding:8px 12px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center">
+      <span style="font-family:var(--mono);font-size:10px;color:var(--muted2)">🔥 SIGNALS</span>
+      <button onclick="scanRecommendations()" style="font-family:var(--mono);font-size:10px;padding:5px 12px;background:var(--green-d);border:1px solid var(--green-b);color:var(--green);border-radius:6px;cursor:pointer">▶ Scan</button>
+    </div>
+    <div style="padding:6px 12px;border-bottom:1px solid var(--border);display:flex;gap:6px;align-items:center">
+      <span style="font-family:var(--mono);font-size:9px;color:var(--muted2)" id="mobScanStatus">Tap Scan to find opportunities</span>
+    </div>
+    <div id="mobSignalsBody" style="max-height:500px;overflow-y:auto">
+      <div class="empty-state">Tap ▶ Scan above</div>
+    </div>
+  </div>
+
+  <!-- Mobile: Recent Trades panel -->
+  <div id="mobPanel-trades" style="display:none;min-height:300px;">
+    <div style="padding:10px 12px;border-bottom:1px solid var(--border);font-family:var(--mono);font-size:10px;color:var(--muted2)">RECENT TRADES</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;padding:4px 12px;font-family:var(--mono);font-size:9px;color:var(--muted);border-bottom:1px solid var(--border)">
+      <span>Price</span><span style="text-align:center">Qty</span><span style="text-align:right">Time</span>
+    </div>
+    <div id="mobTradesBody" style="max-height:400px;overflow-y:auto"></div>
   </div>
 
   <!-- ══ WATCHLIST — full width below chart ══ -->
@@ -1371,6 +1478,83 @@ function saveCredentials() {
     localStorage.setItem('at_credentials', JSON.stringify(creds));
   } catch(e) {}
 }
+
+// ── Server Auto-Trading Functions ─────────────────────────────────────
+async function pushCredentialsToServer() {
+  try {
+    const r = await fetch(`${PROXY}/set-credentials`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        api_key:        cfg.apiKey,
+        api_secret:     cfg.secretKey,
+        trading_mode:   cfg.tradingMode || 'linear',
+        trade_size:     cfg.defaultSize || 100,
+        tp_pct:         cfg.defaultTP || 15,
+        sl_pct:         cfg.defaultSLCrypto || 3,
+        min_confidence: AUTO_TRADE_THRESH || 75,
+        auto_enabled:   autoScanEnabled,
+      })
+    });
+    const d = await r.json().catch(() => ({}));
+    log('INFO', `🖥️ Server auto-trading: ${d.auto_enabled ? 'ON ✅ — trades 24/7 without browser' : 'credentials saved'}`);
+    updateServerStatusBadge(d.auto_enabled);
+  } catch(e) {
+    // Silent — server may not have the endpoint yet
+  }
+}
+
+async function checkServerStatus() {
+  try {
+    const r = await fetch(`${PROXY}/auto-status`, { signal: AbortSignal.timeout(5000) });
+    if (!r.ok) return;
+    const d = await r.json();
+    updateServerStatusBadge(d.auto_enabled);
+    if (d.regime && d.regime !== 'UNKNOWN') {
+      const badge = document.getElementById('regimeBadge');
+      if (badge && lastRegime === 'UNKNOWN') {
+        const icons = { 'TRENDING_UP':'📈','TRENDING_DOWN':'📉','RANGING':'↔️' };
+        const colors = { 'TRENDING_UP':'var(--green)','TRENDING_DOWN':'var(--red)','RANGING':'var(--amber)' };
+        badge.textContent = `${icons[d.regime]||'🌡️'} ${d.regime.replace('_',' ')}`;
+        badge.style.color = colors[d.regime] || 'var(--muted)';
+      }
+    }
+  } catch(e) { /* silent */ }
+}
+
+function updateServerStatusBadge(enabled) {
+  const badge = document.getElementById('serverStatusBadge');
+  if (!badge) return;
+  if (enabled) {
+    badge.textContent   = '🖥️ SERVER ON';
+    badge.style.color   = 'var(--green)';
+    badge.style.borderColor = 'var(--green-b)';
+    badge.style.background  = 'var(--green-d)';
+  } else {
+    badge.textContent   = '🖥️ SERVER OFF';
+    badge.style.color   = 'var(--muted2)';
+    badge.style.borderColor = 'var(--border2)';
+    badge.style.background  = 'transparent';
+  }
+}
+
+async function toggleServerAutoTrading() {
+  try {
+    // First push current credentials
+    await pushCredentialsToServer();
+    const r = await fetch(`${PROXY}/auto-toggle`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({})
+    });
+    const d = await r.json();
+    updateServerStatusBadge(d.auto_enabled);
+    log('INFO', `🖥️ Server auto-trading: ${d.auto_enabled ? 'ON ✅ — bot trades 24/7 on Render without browser' : 'OFF — server scanning paused'}`);
+  } catch(e) {
+    log('ERR', `Server toggle failed: ${e.message} — make sure proxy is updated and redeployed`);
+  }
+}
+
 
 async function autoConnectIfSaved() {
   // On page load, if credentials are saved → auto-connect (works on phone, tablet, any browser)
@@ -5596,8 +5780,13 @@ function mobileScrollTo(id) {
 let swRegistration = null;
 
 async function registerServiceWorker() {
-  if (!('serviceWorker' in navigator)) {
-    console.log('Service Worker not supported');
+  if (!('serviceWorker' in navigator)) return;
+  // Only register on the real GitHub Pages URL — not on previews or localhost
+  const host = location.hostname;
+  const isGitHubPages = host.endsWith('github.io');
+  const isLocalhost   = host === 'localhost' || host === '127.0.0.1';
+  if (!isGitHubPages && !isLocalhost) {
+    console.log('SW: skipping registration on preview/CDN host:', host);
     return;
   }
   try {
@@ -5795,10 +5984,7 @@ async function installPWA() {
   if (banner) banner.remove();
   if (!deferredInstallPrompt) {
     // iOS instructions
-    alert('To install on iPhone:
-1. Tap the Share button (□↑) at the bottom
-2. Scroll down and tap "Add to Home Screen"
-3. Tap "Add" — done!');
+    alert('To install on iPhone:\n1. Tap the Share button at the bottom\n2. Tap \"Add to Home Screen\"\n3. Tap Add');
     return;
   }
   deferredInstallPrompt.prompt();
@@ -5850,6 +6036,272 @@ window.addEventListener('load', () => {
     notificationsEnabled = true;
     updateNotifBtn();
   }
+});
+</script>
+
+
+<script>
+// ── Mobile Bybit-style Tab System ─────────────────────────────────────
+let currentMobTab = 'chart';
+let mobObTimer = null;
+
+function switchMobTab(tab) {
+  currentMobTab = tab;
+  // Update tab buttons
+  document.querySelectorAll('.mob-tab').forEach(b => b.classList.remove('active'));
+  const activeBtn = document.querySelector(`.mob-tab[onclick*="'${tab}'"]`);
+  if (activeBtn) activeBtn.classList.add('active');
+
+  // Hide all panels
+  ['chart','book','pos','signals','trades'].forEach(t => {
+    const el = document.getElementById(`mobPanel-${t}`);
+    if (el) el.style.display = 'none';
+  });
+
+  // Show the chart panel on chart tab (it's the main chart section)
+  const chartGrid = document.querySelector('.chart-grid-3col');
+  const tfRow = document.querySelector('.tf-row') || document.querySelector('[class*="tf-btn"]')?.parentElement;
+
+  if (tab === 'chart') {
+    if (chartGrid) chartGrid.style.display = 'grid';
+    // Show chart timeframe buttons
+    const tfSection = document.getElementById('chartSection')?.querySelector('[style*="border-bottom"]');
+  } else {
+    if (chartGrid) chartGrid.style.display = 'none';
+    const panel = document.getElementById(`mobPanel-${tab}`);
+    if (panel) panel.style.display = 'block';
+  }
+
+  // Load data for the active tab
+  if (tab === 'book') startMobOrderBook();
+  if (tab === 'pos') renderMobPositions();
+  if (tab === 'signals') syncMobSignals();
+  if (tab === 'trades') loadMobTrades();
+}
+
+// ── Mobile Order Book ─────────────────────────────────────────────────
+function startMobOrderBook() {
+  if (mobObTimer) clearInterval(mobObTimer);
+  fetchMobOrderBook();
+  mobObTimer = setInterval(fetchMobOrderBook, 2000);
+}
+
+async function fetchMobOrderBook() {
+  const sym = currentChartTicker || 'BTCUSDT';
+  const symEl = document.getElementById('mobBookSymbol');
+  if (symEl) symEl.textContent = sym;
+  try {
+    const cat = cfg?.tradingMode || 'linear';
+    const r = await fetch(`https://api.bybit.com/v5/market/orderbook?category=${cat}&symbol=${sym}&limit=12`, {signal:AbortSignal.timeout(4000)});
+    if (!r.ok) return;
+    const d = await r.json();
+    const ob = d.result;
+    if (!ob) return;
+
+    const asks = (ob.a||[]).slice(0,12).map(([p,q])=>({p:parseFloat(p),q:parseFloat(q)}));
+    const bids = (ob.b||[]).slice(0,12).map(([p,q])=>({p:parseFloat(p),q:parseFloat(q)}));
+    const maxQ = Math.max(...asks.map(a=>a.q),...bids.map(b=>b.q),1);
+
+    const fmtP = p => p>=1000?p.toFixed(2):p>=1?p.toFixed(4):p.toFixed(6);
+    const fmtQ = q => q>=1000?(q/1000).toFixed(1)+'K':q.toFixed(2);
+
+    const asksEl = document.getElementById('mobObAsks');
+    if (asksEl) {
+      asksEl.innerHTML = [...asks].reverse().map(a => {
+        const w = (a.q/maxQ*100).toFixed(0);
+        return `<div style="display:grid;grid-template-columns:1fr 1fr 1fr;padding:3px 12px;position:relative;font-family:var(--mono);font-size:11px">
+          <div style="position:absolute;top:0;right:0;bottom:0;width:${w}%;background:rgba(255,61,107,0.08);pointer-events:none"></div>
+          <span style="color:var(--red)">${fmtP(a.p)}</span>
+          <span style="text-align:center;color:var(--muted2)">${fmtQ(a.q)}</span>
+          <span style="text-align:right;color:var(--muted)">${parseInt(a.p*a.q).toLocaleString()}</span>
+        </div>`;
+      }).join('');
+    }
+
+    const bidsEl = document.getElementById('mobObBids');
+    if (bidsEl) {
+      bidsEl.innerHTML = bids.map(b => {
+        const w = (b.q/maxQ*100).toFixed(0);
+        return `<div style="display:grid;grid-template-columns:1fr 1fr 1fr;padding:3px 12px;position:relative;font-family:var(--mono);font-size:11px">
+          <div style="position:absolute;top:0;left:0;bottom:0;width:${w}%;background:rgba(0,229,160,0.08);pointer-events:none"></div>
+          <span style="color:var(--green)">${fmtP(b.p)}</span>
+          <span style="text-align:center;color:var(--muted2)">${fmtQ(b.q)}</span>
+          <span style="text-align:right;color:var(--muted)">${parseInt(b.p*b.q).toLocaleString()}</span>
+        </div>`;
+      }).join('');
+    }
+
+    if (asks.length && bids.length) {
+      const mid = bids[0].p;
+      const spread = (asks[0].p - bids[0].p).toFixed(asks[0].p<1?6:4);
+      const midEl = document.getElementById('mobObMid');
+      const sprEl = document.getElementById('mobObSpread');
+      if (midEl) { midEl.textContent = fmtP(mid); midEl.style.color = 'var(--green)'; }
+      if (sprEl) sprEl.textContent = `Spread ${spread}`;
+
+      const totalQ = asks.reduce((s,a)=>s+a.q,0) + bids.reduce((s,b)=>s+b.q,0);
+      const buyPct = totalQ>0 ? (bids.reduce((s,b)=>s+b.q,0)/totalQ*100).toFixed(0) : 50;
+      const sellPct = 100 - buyPct;
+      const buyBar = document.getElementById('mobObBuyBar');
+      const selBar = document.getElementById('mobObSellBar');
+      const buyPctEl = document.getElementById('mobObBuyPct');
+      const selPctEl = document.getElementById('mobObSellPct');
+      if (buyBar) buyBar.style.width = buyPct+'%';
+      if (selBar) selBar.style.width = sellPct+'%';
+      if (buyPctEl) buyPctEl.textContent = `B ${buyPct}%`;
+      if (selPctEl) selPctEl.textContent = `${sellPct}% S`;
+    }
+  } catch(e) {}
+}
+
+// ── Mobile Positions ──────────────────────────────────────────────────
+function renderMobPositions() {
+  const body = document.getElementById('mobPosBody');
+  if (!body) return;
+  const positions = Object.values(openPositions || {});
+  if (!positions.length) {
+    body.innerHTML = '<div class="empty-state" style="padding:40px">No open positions</div>';
+    return;
+  }
+  body.innerHTML = positions.map(p => {
+    const pl = parseFloat(p.unrealized_pl||0);
+    const plPct = parseFloat(p.unrealized_plpc||0)*100;
+    const plColor = pl>=0?'var(--green)':'var(--red)';
+    const entry = parseFloat(p.avg_entry_price||0);
+    const cur = parseFloat(p.current_price||entry);
+    const side = (p.side||'Buy').toUpperCase();
+    const sideColor = side==='BUY'?'var(--green)':'var(--red)';
+    return `<div style="padding:14px 16px;border-bottom:1px solid var(--border)">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <div>
+          <span style="font-family:var(--mono);font-size:15px;font-weight:700;color:#fff">${p.symbol}</span>
+          <span style="font-family:var(--mono);font-size:10px;color:${sideColor};margin-left:8px;padding:2px 7px;border-radius:4px;border:1px solid ${sideColor};background:${sideColor}22">${side}</span>
+        </div>
+        <div style="text-align:right">
+          <div style="font-family:var(--mono);font-size:16px;font-weight:700;color:${plColor}">${pl>=0?'+':''}$${Math.abs(pl).toFixed(2)}</div>
+          <div style="font-family:var(--mono);font-size:11px;color:${plColor}">${plPct>=0?'+':''}${plPct.toFixed(2)}%</div>
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;font-family:var(--mono);font-size:10px;color:var(--muted2);margin-bottom:10px">
+        <div><div style="font-size:8px;margin-bottom:2px">ENTRY</div><div style="color:#fff">$${entry.toFixed(entry<1?6:entry<10?4:2)}</div></div>
+        <div><div style="font-size:8px;margin-bottom:2px">MARK</div><div style="color:#fff">$${cur.toFixed(cur<1?6:cur<10?4:2)}</div></div>
+        <div><div style="font-size:8px;margin-bottom:2px">QTY</div><div style="color:#fff">${parseFloat(p.qty||p.size||0).toFixed(3)}</div></div>
+      </div>
+      <button onclick="closePosition('${p.symbol}')" style="width:100%;padding:10px;background:var(--red-d);border:1px solid var(--red-b);color:var(--red);border-radius:8px;font-family:var(--mono);font-size:12px;cursor:pointer">Close Position</button>
+    </div>`;
+  }).join('');
+}
+
+// ── Mobile Signals Sync ───────────────────────────────────────────────
+function syncMobSignals() {
+  // Mirror the main rec body into mobile signals
+  const src = document.getElementById('recBody');
+  const dst = document.getElementById('mobSignalsBody');
+  const statusSrc = document.getElementById('recScanStatus');
+  const statusDst = document.getElementById('mobScanStatus');
+  if (src && dst) dst.innerHTML = src.innerHTML;
+  if (statusSrc && statusDst) statusDst.textContent = statusSrc.textContent;
+}
+
+// ── Mobile Recent Trades ──────────────────────────────────────────────
+async function loadMobTrades() {
+  const sym = currentChartTicker || 'BTCUSDT';
+  const body = document.getElementById('mobTradesBody');
+  if (!body) return;
+  body.innerHTML = '<div class="empty-state">Loading...</div>';
+  try {
+    const cat = cfg?.tradingMode || 'linear';
+    const r = await fetch(`https://api.bybit.com/v5/market/recent-trade?category=${cat}&symbol=${sym}&limit=40`,{signal:AbortSignal.timeout(5000)});
+    if (!r.ok) throw new Error('failed');
+    const d = await r.json();
+    const trades = d.result?.list||[];
+    body.innerHTML = trades.map(t => {
+      const p = parseFloat(t.price);
+      const q = parseFloat(t.size);
+      const ts = new Date(parseInt(t.time)).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+      const isBuy = t.side==='Buy';
+      const fmtP = p>=1000?p.toFixed(2):p>=1?p.toFixed(4):p.toFixed(6);
+      const fmtQ = q>=1000?(q/1000).toFixed(2)+'K':q.toFixed(3);
+      return `<div style="display:grid;grid-template-columns:1fr 1fr 1fr;padding:5px 12px;border-bottom:1px solid rgba(255,255,255,0.03);font-family:var(--mono);font-size:11px">
+        <span style="color:${isBuy?'var(--green)':'var(--red)'}">${fmtP}</span>
+        <span style="text-align:center;color:var(--muted2)">${fmtQ}</span>
+        <span style="text-align:right;color:var(--muted)">${ts}</span>
+      </div>`;
+    }).join('');
+  } catch(e) {
+    body.innerHTML = '<div class="empty-state">Could not load trades</div>';
+  }
+}
+
+// ── Mobile Quick Trade ────────────────────────────────────────────────
+async function mobQuickBuy() {
+  const ticker = currentChartTicker || 'BTCUSDT';
+  const size = parseFloat(document.getElementById('mobTradeSize')?.value)||20;
+  const lev  = parseInt(document.getElementById('mobTradeLev')?.value)||1;
+  if (!watchlist[ticker]) {
+    watchlist[ticker] = {
+      type:'crypto', mode:cfg?.tradingMode||'linear',
+      size, leverage:lev, tp:cfg?.defaultTP||15, sl:cfg?.defaultSLCrypto||3,
+      trail:2, trailSL:2, dollarTrail:0, highWatermark:null,
+      dollarTrailPeak:null, dollarTrailFloor:null, trailSLPrice:null,
+      signal:'hold', name:ticker, entryPrice:null
+    };
+    renderWatchlist();
+  }
+  log('INFO', `▲ Mobile BUY ${ticker} $${size} ×${lev}`);
+  await placeBuy(ticker, watchlist[ticker]?.price||0);
+  setTimeout(()=>{ renderMobPositions(); }, 3000);
+}
+
+async function mobQuickSell() {
+  const ticker = currentChartTicker || 'BTCUSDT';
+  log('INFO', `▼ Mobile SELL/SHORT ${ticker}`);
+  await placeShort(ticker, watchlist[ticker]?.price||0);
+  setTimeout(()=>{ renderMobPositions(); }, 3000);
+}
+
+// ── Init mobile tabs on load ──────────────────────────────────────────
+function initMobileTabs() {
+  const isMobile = window.innerWidth <= 640;
+  const tabs = document.getElementById('mobileChartTabs');
+  if (!isMobile || !tabs) return;
+  tabs.style.display = 'flex';
+  // Start on chart tab
+  switchMobTab('chart');
+}
+
+// Keep positions in sync when switching to pos tab
+const _origRefreshPortfolio = window.refreshPortfolio;
+// Update mobile positions when portfolio refreshes
+const _mobOrigRenderPositions = window.renderPositions;
+window.renderPositions = function(positions) {
+  if (_mobOrigRenderPositions) _mobOrigRenderPositions(positions);
+  if (currentMobTab === 'pos') renderMobPositions();
+};
+
+// Also sync signals panel when scan completes
+const _origRenderRec = window.renderRecommendations;
+window.renderRecommendations = function(results) {
+  if (_origRenderRec) _origRenderRec(results);
+  if (currentMobTab === 'signals') syncMobSignals();
+};
+
+// Stop order book timer when leaving book tab
+window.addEventListener('visibilitychange', () => {
+  if (document.hidden && mobObTimer) {
+    clearInterval(mobObTimer);
+    mobObTimer = null;
+  }
+});
+
+window.addEventListener('load', () => {
+  setTimeout(initMobileTabs, 500);
+});
+window.addEventListener('resize', () => {
+  const isMobile = window.innerWidth <= 640;
+  const tabs = document.getElementById('mobileChartTabs');
+  if (tabs) tabs.style.display = isMobile ? 'flex' : 'none';
+  if (!isMobile && mobObTimer) { clearInterval(mobObTimer); mobObTimer = null; }
 });
 </script>
 
