@@ -282,17 +282,20 @@ class BybitProxyHandler(BaseHTTPRequestHandler):
         elif path == "/set-credentials":
             # Browser pushes API keys + settings to server for autonomous trading
             body = json.loads(self.rfile.read(int(self.headers.get('Content-Length',0))))
-            _auto_creds['api_key']       = body.get('api_key','')
-            _auto_creds['api_secret']    = body.get('api_secret','')
-            _auto_creds['trading_mode']  = body.get('trading_mode','linear')
-            _auto_creds['trade_size']    = float(body.get('trade_size', 100))
-            _auto_creds['tp_pct']        = float(body.get('tp_pct', 15))
-            _auto_creds['sl_pct']        = float(body.get('sl_pct', 3))
-            _auto_creds['min_confidence']= float(body.get('min_confidence', 75))
-            enabled = body.get('auto_enabled', False)
-            _auto_creds['auto_enabled']  = bool(enabled)
-            print(f"  [AutoTrader] Credentials updated — auto={'ON' if enabled else 'OFF'} mode={_auto_creds['trading_mode']} size=${_auto_creds['trade_size']}")
-            self.send_json(200, {"status": "ok", "auto_enabled": _auto_creds['auto_enabled']})
+            # Only update keys if provided and non-empty
+            if body.get('api_key'):    _auto_creds['api_key']    = body['api_key']
+            if body.get('api_secret'): _auto_creds['api_secret'] = body['api_secret']
+            if body.get('trading_mode'): _auto_creds['trading_mode'] = body['trading_mode']
+            if body.get('trade_size'):   _auto_creds['trade_size']   = float(body['trade_size'])
+            if body.get('tp_pct'):       _auto_creds['tp_pct']       = float(body['tp_pct'])
+            if body.get('sl_pct'):       _auto_creds['sl_pct']       = float(body['sl_pct'])
+            if body.get('min_confidence'): _auto_creds['min_confidence'] = float(body['min_confidence'])
+            # auto_enabled: only update if explicitly included in request
+            if 'auto_enabled' in body:
+                _auto_creds['auto_enabled'] = bool(body['auto_enabled'])
+            enabled = _auto_creds['auto_enabled']
+            print(f"  [AutoTrader] Credentials updated — auto={'ON ✅' if enabled else 'OFF'} mode={_auto_creds['trading_mode']} size=${_auto_creds['trade_size']}")
+            self.send_json(200, {"status": "ok", "auto_enabled": enabled})
 
         elif path == "/auto-status":
             # Get current autonomous trading status
@@ -309,9 +312,16 @@ class BybitProxyHandler(BaseHTTPRequestHandler):
         elif path == "/auto-toggle":
             # Toggle auto trading on/off
             _auto_creds['auto_enabled'] = not _auto_creds['auto_enabled']
-            state = 'ON' if _auto_creds['auto_enabled'] else 'OFF'
-            print(f"  [AutoTrader] Auto-trading toggled {state}")
-            self.send_json(200, {"auto_enabled": _auto_creds['auto_enabled'], "status": state})
+            state = 'ON ✅' if _auto_creds['auto_enabled'] else 'OFF'
+            has_creds = bool(_auto_creds.get('api_key')) and bool(_auto_creds.get('api_secret'))
+            print(f"  [AutoTrader] Auto-trading {state} | has_credentials={has_creds}")
+            if _auto_creds['auto_enabled'] and not has_creds:
+                print(f"  [AutoTrader] ⚠ No credentials — set BYBIT_API_KEY env var or connect from browser first")
+            self.send_json(200, {
+                "auto_enabled": _auto_creds['auto_enabled'],
+                "status": state,
+                "has_credentials": has_creds,
+            })
         elif path == "/test":
             # Test API keys with simplest possible Bybit call
             self.handle_test(api_key, api_secret)

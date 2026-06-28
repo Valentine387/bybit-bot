@@ -1526,60 +1526,85 @@ function updateServerStatusBadge(enabled) {
   const badge = document.getElementById('serverStatusBadge');
   if (!badge) return;
   if (enabled) {
-    badge.textContent   = '🖥️ SERVER ON';
-    badge.style.color   = 'var(--green)';
-    badge.style.borderColor = 'var(--green-b)';
-    badge.style.background  = 'var(--green-d)';
+    badge.textContent        = '🖥️ 24/7 ON';
+    badge.style.color        = '#000';
+    badge.style.background   = 'var(--green)';
+    badge.style.borderColor  = 'var(--green)';
+    badge.style.fontWeight   = '700';
+    badge.title              = 'Server auto-trading is ON — click to disable';
   } else {
-    badge.textContent   = '🖥️ SERVER OFF';
-    badge.style.color   = 'var(--muted2)';
-    badge.style.borderColor = 'var(--border2)';
-    badge.style.background  = 'transparent';
+    badge.textContent        = '🖥️ SERVER OFF';
+    badge.style.color        = 'var(--muted2)';
+    badge.style.background   = 'transparent';
+    badge.style.borderColor  = 'var(--border2)';
+    badge.style.fontWeight   = '400';
+    badge.title              = 'Click to enable 24/7 server-side auto-trading';
   }
 }
 
 async function toggleServerAutoTrading() {
   const badge = document.getElementById('serverStatusBadge');
-  if (badge) { badge.textContent = '🖥️ Connecting...'; badge.style.color = 'var(--amber)'; }
+  if (badge) {
+    badge.textContent = '🖥️ ...';
+    badge.style.color = 'var(--amber)';
+    badge.style.borderColor = 'var(--amber-b)';
+    badge.style.background = 'var(--amber-d)';
+  }
 
-  // Step 1: check if the new proxy endpoints exist
   try {
-    const statusCheck = await fetch(`${PROXY}/auto-status`, { signal: AbortSignal.timeout(5000) });
-    if (!statusCheck.ok) throw new Error(`Proxy returned ${statusCheck.status}`);
+    // Step 1 — Check proxy supports autonomous trading
+    const statusCheck = await fetch(`${PROXY}/auto-status`, { signal: AbortSignal.timeout(6000) });
+    if (!statusCheck.ok) throw new Error('old_proxy');
     const status = await statusCheck.json();
 
-    if (!status.hasOwnProperty('auto_enabled')) {
-      // Old proxy — doesn't support server-side trading yet
-      log('ERR', '🖥️ Proxy needs updating — upload the new bybit_proxy.py to GitHub and redeploy on Render');
-      if (badge) { badge.textContent = '🖥️ UPDATE PROXY'; badge.style.color = 'var(--red)'; badge.style.borderColor = 'var(--red-b)'; badge.style.background = 'var(--red-d)'; }
-      return;
-    }
+    if (!status.hasOwnProperty('auto_enabled')) throw new Error('old_proxy');
 
-    // Step 2: push credentials to server
-    await pushCredentialsToServer();
-
-    // Step 3: toggle
-    const r = await fetch(`${PROXY}/auto-toggle`, {
+    // Step 2 — Push credentials FIRST without touching auto_enabled state
+    // (send credentials only, don't set auto_enabled yet)
+    await fetch(`${PROXY}/set-credentials`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({})
+      body: JSON.stringify({
+        api_key:        cfg.apiKey,
+        api_secret:     cfg.secretKey,
+        trading_mode:   cfg.tradingMode || 'linear',
+        trade_size:     cfg.defaultSize || 100,
+        tp_pct:         cfg.defaultTP || 15,
+        sl_pct:         cfg.defaultSLCrypto || 3,
+        min_confidence: AUTO_TRADE_THRESH || 75,
+        auto_enabled:   !status.auto_enabled, // set to desired new state directly
+      })
     });
-    if (!r.ok) throw new Error(`Toggle returned ${r.status}`);
-    const d = await r.json();
-    updateServerStatusBadge(d.auto_enabled);
-    if (d.auto_enabled) {
-      log('INFO', '🖥️ SERVER AUTO-TRADING ON ✅ — bot will scan and trade 24/7 on Render even when browser is closed');
+
+    // Step 3 — Read back the new state
+    const newStatus = await fetch(`${PROXY}/auto-status`).then(r=>r.json());
+    const isOn = newStatus.auto_enabled;
+
+    updateServerStatusBadge(isOn);
+
+    if (isOn) {
+      log('INFO', '🖥️ SERVER ON ✅ — bot scanning & trading 24/7 on Render. Close browser anytime.');
     } else {
-      log('INFO', '🖥️ Server auto-trading OFF — click badge to re-enable');
+      log('INFO', '🖥️ Server OFF — click the badge to enable 24/7 trading');
     }
+
   } catch(e) {
-    // Likely old proxy without endpoints
-    if (e.message.includes('404') || e.message.includes('Failed to fetch') || e.message.includes('NetworkError')) {
-      log('ERR', '🖥️ Cannot reach proxy — make sure bybit_proxy.py (latest version) is deployed on Render');
-      if (badge) { badge.textContent = '🖥️ PROXY ERROR'; badge.style.color = 'var(--red)'; badge.style.borderColor = 'var(--red-b)'; badge.style.background = 'var(--red-d)'; }
+    if (e.message === 'old_proxy' || e.message.includes('404')) {
+      log('ERR', '🖥️ Proxy needs updating — upload new bybit_proxy.py to GitHub then redeploy on Render');
+      if (badge) {
+        badge.textContent = '🖥️ UPDATE PROXY';
+        badge.style.color = 'var(--red)';
+        badge.style.borderColor = 'var(--red-b)';
+        badge.style.background = 'var(--red-d)';
+      }
     } else {
-      log('ERR', `🖥️ Server toggle: ${e.message} — try uploading the new bybit_proxy.py to GitHub`);
-      if (badge) { badge.textContent = '🖥️ SERVER OFF'; badge.style.color = 'var(--muted2)'; badge.style.borderColor = 'var(--border2)'; badge.style.background = 'transparent'; }
+      log('ERR', `🖥️ Server error: ${e.message}`);
+      if (badge) {
+        badge.textContent = '🖥️ SERVER OFF';
+        badge.style.color = 'var(--muted2)';
+        badge.style.borderColor = 'var(--border2)';
+        badge.style.background = 'transparent';
+      }
     }
   }
 }
