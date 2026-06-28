@@ -270,6 +270,93 @@ class BybitProxyHandler(BaseHTTPRequestHandler):
             self.handle_kline(params)
         elif path == "/instrument":
             self.handle_instrument(params)
+        elif path == "/order-history":
+            # Fetch closed order history from Bybit
+            # Supports: ?hours=24&category=linear&limit=50
+            api_key    = params.get("key",      [""])[0]
+            api_secret = params.get("secret",   [""])[0]
+            category   = params.get("category", ["linear"])[0]
+            limit      = int(params.get("limit", ["50"])[0])
+            hours      = int(params.get("hours", ["24"])[0])
+
+            try:
+                import time as _time
+                # Calculate start time in ms
+                start_ms = int((_time.time() - hours * 3600) * 1000)
+
+                all_orders = []
+                for cat in ([category] if category != 'all' else ['linear','spot']):
+                    try:
+                        d = bybit_get("/v5/order/history", {
+                            "category":   cat,
+                            "limit":      str(limit),
+                            "startTime":  str(start_ms),
+                            "orderStatus": "Filled",
+                        }, api_key, api_secret)
+                        orders = d.get("result", {}).get("list", [])
+                        for o in orders:
+                            # Normalise to our format
+                            qty       = float(o.get("qty", 0))
+                            avg_price = float(o.get("avgPrice", 0) or o.get("price", 0))
+                            cum_exec  = float(o.get("cumExecValue", 0))
+                            cum_fee   = float(o.get("cumExecFee", 0))
+                            side      = o.get("side", "Buy")
+                            symbol    = o.get("symbol", "")
+                            created   = int(o.get("createdTime", 0))
+                            updated   = int(o.get("updatedTime", created))
+
+                            # Try to get P&L from closed PnL endpoint for futures
+                            all_orders.append({
+                                "orderId":    o.get("orderId", ""),
+                                "symbol":     symbol,
+                                "side":       side,
+                                "qty":        qty,
+                                "avg_price":  avg_price,
+                                "value":      cum_exec,
+                                "fee":        cum_fee,
+                                "category":   cat,
+                                "created_ms": created,
+                                "updated_ms": updated,
+                                "status":     o.get("orderStatus", "Filled"),
+                            })
+                    except Exception as e:
+                        print(f"  order-history {cat}: {e}")
+
+                # Also fetch closed PnL for futures (has actual P&L data)
+                pnl_map = {}
+                try:
+                    pnl_d = bybit_get("/v5/position/closed-pnl", {
+                        "category":  "linear",
+                        "limit":     str(limit),
+                        "startTime": str(start_ms),
+                    }, api_key, api_secret)
+                    for p in pnl_d.get("result", {}).get("list", []):
+                        sym = p.get("symbol", "")
+                        pnl_map[sym] = pnl_map.get(sym, [])
+                        pnl_map[sym].append({
+                            "pnl":        float(p.get("closedPnl", 0)),
+                            "entry":      float(p.get("avgEntryPrice", 0)),
+                            "exit":       float(p.get("avgExitPrice", 0)),
+                            "qty":        float(p.get("qty", 0)),
+                            "created_ms": int(p.get("createdTime", 0)),
+                            "updated_ms": int(p.get("updatedTime", 0)),
+                            "side":       p.get("side", "Buy"),
+                        })
+                except Exception as e:
+                    print(f"  closed-pnl: {e}")
+
+                # Sort by time descending
+                all_orders.sort(key=lambda x: x["updated_ms"], reverse=True)
+
+                self.send_json(200, {
+                    "orders": all_orders,
+                    "pnl":    pnl_map,
+                    "count":  len(all_orders),
+                    "hours":  hours,
+                })
+            except Exception as e:
+                self.send_json(500, {"error": str(e)})
+
         elif path == "/ping" or path == "/healthz":
             # Simple connectivity test — Render uses /healthz for health checks
             self.send_json(200, {

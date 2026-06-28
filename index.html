@@ -1033,7 +1033,9 @@ body::before{content:'';position:fixed;inset:0;background-image:url("data:image/
         <span class="panel-title">📊 Closed Trades</span>
         <div style="display:flex;gap:6px;align-items:center">
           <span style="font-family:var(--mono);font-size:9px;color:var(--muted)" id="closedSummary"></span>
-          <button class="sbtn" style="font-size:9px;padding:3px 8px;border-color:var(--red-b);color:var(--red)" onclick="clearClosedTrades()">🗑 Clear All</button>
+          <button class="sbtn" id="loadHistoryBtn" onclick="loadTradeHistory(24)" style="font-size:9px;padding:3px 8px;border-color:var(--blue);color:var(--blue)">📥 Load 24h</button>
+          <button class="sbtn" onclick="loadTradeHistory(168)" style="font-size:9px;padding:3px 8px;">📥 7 days</button>
+          <button class="sbtn" style="font-size:9px;padding:3px 8px;border-color:var(--red-b);color:var(--red)" onclick="clearClosedTrades()">🗑 Clear</button>
         </div>
       </div>
       <div class="log-wrap" id="closedTradesPanel" style="max-height:460px"><div class="empty-state">No closed trades yet</div></div>
@@ -1823,6 +1825,7 @@ async function connect() {
     log('INFO', cfg.alpacaNewsKey ? `📰 News: Alpaca/Benzinga feed active` : `📰 News: Claude-only (add Alpaca keys for live headlines)`);
     log('ERR',  `⚠ REAL MONEY ACTIVE — start with small sizes and monitor closely.`);
     refreshPortfolio();
+    autoLoadTradeHistory(); // Auto-fetch last 24h trades from Bybit
 
     // Auto-load chart on connect — first watchlist coin or BTC
     setTimeout(() => {
@@ -3817,22 +3820,155 @@ function removeAllWatchlist() {
   log('INFO',`🗑 Removed all ${keys.length} coin(s) from watchlist.`);
 }
 
+// ── Trade History Loader — fetches closed orders from Bybit ──────────
+async function loadTradeHistory(hours = 24) {
+  const btn = document.getElementById('loadHistoryBtn');
+  const panel = document.getElementById('closedTradesPanel');
+
+  if (btn) { btn.textContent = '⏳ Loading...'; btn.disabled = true; }
+  if (panel) panel.innerHTML = '<div class="empty-state">Fetching trade history from Bybit...</div>';
+
+  try {
+    // Fetch closed orders for both spot and linear
+    const [linearData, spotData] = await Promise.all([
+      bybitGet('/order-history', {
+        category: 'linear', hours: String(hours), limit: '100'
+      }).catch(() => ({ orders: [], pnl: {} })),
+      bybitGet('/order-history', {
+        category: 'spot', hours: String(hours), limit: '100'
+      }).catch(() => ({ orders: [], pnl: {} })),
+    ]);
+
+    const allOrders  = [
+      ...(linearData.orders || []),
+      ...(spotData.orders   || []),
+    ].sort((a, b) => b.updated_ms - a.updated_ms);
+
+    const pnlMap = { ...(linearData.pnl || {}), ...(spotData.pnl || {}) };
+
+    if (!allOrders.length) {
+      if (panel) panel.innerHTML = `<div class="empty-state">No closed trades in the last ${hours} hours</div>`;
+      if (btn) { btn.textContent = '📥 Load 24h'; btn.disabled = false; }
+      log('INFO', `📊 Trade history: no closed trades in last ${hours}h`);
+      return;
+    }
+
+    // Convert to our closedTrades format + merge with existing local trades
+    const serverTrades = allOrders.map(o => {
+      const ts = new Date(o.updated_ms);
+      const timeStr = ts.toLocaleTimeString('en-US', { hour12: false });
+      const dateStr = ts.toLocaleDateString('en-GB', { day:'2-digit', month:'short' });
+
+      // Try to find matching P&L from closed-pnl endpoint
+      const pnlList = pnlMap[o.symbol] || [];
+      const matchPnl = pnlList.find(p =>
+        Math.abs(p.updated_ms - o.updated_ms) < 60000 // within 1 minute
+      );
+
+      const pl    = matchPnl ? matchPnl.pnl : 0;
+      const entry = matchPnl ? matchPnl.entry : o.avg_price;
+      const exit  = matchPnl ? matchPnl.exit  : o.avg_price;
+
+      return {
+        sym:    o.symbol,
+        side:   o.side,
+        qty:    o.qty,
+        entry:  entry,
+        exit:   exit,
+        pl:     pl,
+        plPct:  entry > 0 ? ((exit - entry) / entry * 100 * (o.side === 'Sell' ? -1 : 1)) : 0,
+        value:  o.value,
+        fee:    o.fee,
+        time:   timeStr,
+        date:   dateStr,
+        cat:    o.category,
+        fromServer: true, // flag — came from Bybit history not local log
+      };
+    });
+
+    // Merge server trades with local trades (avoid duplicates by sym+time)
+    const localKeys = new Set(closedTrades.map(t => `${t.sym}_${t.time}`));
+    const newTrades = serverTrades.filter(t => !localKeys.has(`${t.sym}_${t.time}`));
+
+    // Prepend server trades then local
+    const merged = [...newTrades, ...closedTrades]
+      .sort((a, b) => {
+        // Sort by time desc — parse time strings
+        return 0; // keep order from server (already sorted)
+      });
+
+    closedTrades = merged.slice(0, 200);
+    renderClosedTrades();
+    saveState();
+
+    const wins   = closedTrades.filter(t => t.pl > 0).length;
+    const losses = closedTrades.filter(t => t.pl < 0).length;
+    const totalPL = closedTrades.reduce((s, t) => s + (t.pl || 0), 0);
+
+    log('INFO', `📊 Loaded ${allOrders.length} trades from last ${hours}h — ${wins} wins / ${losses} losses | Total P&L: ${totalPL >= 0 ? '+' : ''}$${totalPL.toFixed(2)}`);
+
+  } catch(e) {
+    log('ERR', `📊 History load failed: ${e.message}`);
+    if (panel) panel.innerHTML = '<div class="empty-state">Failed to load history — check proxy connection</div>';
+  } finally {
+    if (btn) { btn.textContent = '📥 Load 24h'; btn.disabled = false; }
+  }
+}
+
+// ── Auto-load history on connect ──────────────────────────────────────
+async function autoLoadTradeHistory() {
+  // Wait 3 seconds after connect for positions to load first
+  await new Promise(r => setTimeout(r, 3000));
+  log('INFO', '📊 Auto-loading trade history from last 24h...');
+  await loadTradeHistory(24);
+}
+
 // FIX #9 — Render closed trades history panel
 function renderClosedTrades() {
   const el = document.getElementById('closedTradesPanel');
   if (!el) return;
-  if (!closedTrades.length) { el.innerHTML='<div class="empty-state">No closed trades yet</div>'; return; }
-  const totalPL = closedTrades.reduce((s,t)=>s+t.pl,0);
-  const wins = closedTrades.filter(t=>t.pl>0).length;
-  const winRate = ((wins/closedTrades.length)*100).toFixed(0);
-  const sumEl = document.getElementById('closedSummary');
-  if (sumEl) sumEl.textContent = `${closedTrades.length} trades · Win rate: ${winRate}% · Total P&L: ${totalPL>=0?'+':''}$${Math.abs(totalPL).toFixed(2)}`;
-  el.innerHTML = closedTrades.slice(0,50).map(t=>`
-    <div class="log-entry">
-      <span class="log-type ${t.pl>=0?'TP':'SL'}">${t.pl>=0?'WIN':'LOSS'}</span>
-      <span class="log-msg">${t.sym} · entry $${t.entry.toFixed(2)} · P&L: <span style="color:${t.pl>=0?'var(--green)':'var(--red)'}">${t.pl>=0?'+':''}$${Math.abs(t.pl).toFixed(2)} (${t.plPct>=0?'+':''}${t.plPct.toFixed(2)}%)</span></span>
-      <span class="log-time">${t.time}</span>
-    </div>`).join('');
+  if (!closedTrades.length) {
+    el.innerHTML = '<div class="empty-state">No closed trades yet — click 📥 Load 24h to fetch history</div>';
+    return;
+  }
+  const totalPL  = closedTrades.reduce((s,t) => s + (t.pl||0), 0);
+  const wins     = closedTrades.filter(t => (t.pl||0) > 0).length;
+  const losses   = closedTrades.filter(t => (t.pl||0) < 0).length;
+  const winRate  = closedTrades.length > 0 ? ((wins/closedTrades.length)*100).toFixed(0) : 0;
+  const sumEl    = document.getElementById('closedSummary');
+  if (sumEl) {
+    const plColor = totalPL >= 0 ? 'var(--green)' : 'var(--red)';
+    sumEl.innerHTML = `${closedTrades.length} trades &nbsp;·&nbsp; <span style="color:var(--green)">${wins}W</span>/<span style="color:var(--red)">${losses}L</span> &nbsp;·&nbsp; <span style="color:${plColor}">${totalPL>=0?'+':''}$${Math.abs(totalPL).toFixed(2)}</span>`;
+  }
+  el.innerHTML = closedTrades.slice(0, 100).map(t => {
+    const pl      = t.pl || 0;
+    const plPct   = t.plPct || 0;
+    const plColor = pl >= 0 ? 'var(--green)' : 'var(--red)';
+    const label   = pl > 0 ? 'WIN' : pl < 0 ? 'LOSS' : 'CLOSE';
+    const labelCls= pl > 0 ? 'TP'  : pl < 0 ? 'SL'   : 'CLOSE';
+    const side    = t.side || (pl >= 0 ? 'Buy' : 'Sell');
+    const sideIcon = side === 'Buy' ? '▲' : '▼';
+    const sideColor = side === 'Buy' ? 'var(--green)' : 'var(--red)';
+    const dateLabel = t.date ? `<span style="color:var(--muted);margin-right:4px">${t.date}</span>` : '';
+    const feeStr  = t.fee ? ` · fee $${parseFloat(t.fee).toFixed(3)}` : '';
+    const serverBadge = t.fromServer
+      ? '<span style="font-family:var(--mono);font-size:8px;color:var(--muted2);background:rgba(77,143,255,0.1);border:1px solid rgba(77,143,255,0.2);padding:1px 4px;border-radius:3px;margin-left:4px">server</span>'
+      : '';
+    const entryStr = t.entry > 0 ? `$${parseFloat(t.entry).toFixed(t.entry < 1 ? 5 : t.entry < 10 ? 4 : 2)}` : '—';
+    const exitStr  = t.exit  > 0 ? ` → $${parseFloat(t.exit).toFixed(t.exit < 1 ? 5 : t.exit < 10 ? 4 : 2)}` : '';
+    return `<div class="log-entry" style="padding:8px 14px">
+      <span class="log-type ${labelCls}">${label}</span>
+      <span class="log-msg">
+        <span style="color:${sideColor};font-weight:600">${sideIcon}</span>
+        <strong style="color:#fff;margin-left:4px">${t.sym}</strong>${serverBadge}
+        <span style="color:var(--muted2);font-size:10px;margin-left:6px">${entryStr}${exitStr}</span>
+        <span style="color:${plColor};margin-left:8px;font-weight:600">${pl>=0?'+':''}$${Math.abs(pl).toFixed(2)}</span>
+        <span style="color:${plColor};font-size:10px"> (${plPct>=0?'+':''}${parseFloat(plPct).toFixed(2)}%)</span>
+        <span style="color:var(--muted);font-size:9px">${feeStr}</span>
+      </span>
+      <span class="log-time">${dateLabel}${t.time}</span>
+    </div>`;
+  }).join('');
 }
 
 // ── Apply to All ──────────────────────────────────────────────────────
