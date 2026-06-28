@@ -12,7 +12,11 @@ in<!DOCTYPE html>
 <meta name="description" content="AI-powered crypto trading bot for Bybit">
 <link rel="manifest" href="manifest.json">
 <link rel="apple-touch-icon" href="icon-192.png">
+<link rel="apple-touch-icon" sizes="192x192" href="icon-192.png">
+<link rel="apple-touch-icon" sizes="512x512" href="icon-512.png">
 <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
+<link rel="icon" type="image/png" sizes="32x32" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAABpUlEQVR4nO2Xv0vDQBTHv3dJTaAdOgriVESKOGmrIHRyEpR0EgXxH6iDi/gPWEdR+g9UXJycdOjk4CAOSkeH4iA4OXRoJaHNnUPNeYHQXknTUOh3St67u/e5dz+SRxAgw0zxIPso5NgtIr/7XrzATqMSVXwYmZIPRADIwb1GUUge37FbhIwzeBAEDTJGLSNTEstMDDPFxxlcltOo/GcgLk0BQgOEvTMmOwPe7MNkQRkgqutZCWAUMw0FoCr7aT0+AC/4sBCTfQpGIX3YDnbuUDyTPu0iA1CRfFoGfWVjX4IpQOwASptQ3kimz14NtuNZGWAyMiBkJOC8nAMpEzNbZZD3L7CNRXSuj3r+tg2tVod+cgMwteJqqAywzWUgaYA023CtvM+X2L2AXr6DW1wDX5pXHpM6dovI/+n95Fp50LcP0PtXsJ1VgAbchYwDzZ+BY3mlgMjAIAieToIVsqC1OmitDj6bBssvCH/n9hjdsz1o1UeQz2+l4MDfEniFYj8Itr0C6Bq6p0V0qr3OzMoJf2L/EtrVA9yDAnh2Tim4qA09xVEd/wIeXKPX7MBItQAAAABJRU5ErkJggg==">
+<link rel="shortcut icon" href="icon-192.png">
 <title>AlgoRhythm v4 — Bybit</title>
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;500;600;700&family=Fira+Code:wght@300;400;500&display=swap" rel="stylesheet">
 <style>
@@ -540,6 +544,7 @@ body::before{content:'';position:fixed;inset:0;background-image:url("data:image/
     <div class="bot-status-text" id="botStatusText"><strong>Bot stopped.</strong> AlgoRhythm v4 · 3-Layer Engine · Press Start Bot to begin.</div>
     <!-- FIX #8 — Proxy health indicator -->
     <div id="proxyIndicator" style="font-family:var(--mono);font-size:9px;padding:3px 8px;border-radius:4px;border:1px solid var(--green-b);background:var(--green-d);color:var(--green);margin-left:4px;">⬤ PROXY OK</div>
+    <div id="serverStatusBadge" onclick="toggleServerAutoTrading()" title="Click to toggle 24/7 server-side auto-trading" style="font-family:var(--mono);font-size:9px;padding:3px 8px;border-radius:4px;border:1px solid var(--border2);background:transparent;color:var(--muted2);margin-left:4px;cursor:pointer;">🖥️ SERVER OFF</div>
     <!-- Breaking news watcher indicator -->
     <div id="newsWatcherIndicator" style="font-family:var(--mono);font-size:9px;padding:3px 8px;border-radius:4px;border:1px solid var(--purple-b);background:var(--purple-d);color:var(--purple);display:none;">🔔 NEWS WATCH 30s</div>
     <div class="countdown-wrap" id="countdownWrap" style="display:none">
@@ -1573,6 +1578,7 @@ async function connect() {
     const wlModeEl = document.getElementById('wlMode');
     if (wlModeEl) wlModeEl.value = tradingMode;
     saveCredentials(); // Save so any device auto-reconnects next time
+    pushCredentialsToServer(); // Push to Render for 24/7 server-side trading
     log('INFO', `✅ Connected to Bybit LIVE account.`);
     log('INFO', `Equity: ${fmt(acct.equity)} USDT | Mode: ${tradingMode.toUpperCase()}`);
     log('INFO', cfg.alpacaNewsKey ? `📰 News: Alpaca/Benzinga feed active` : `📰 News: Claude-only (add Alpaca keys for live headlines)`);
@@ -4108,6 +4114,7 @@ function toggleAutoScan() {
     lastRegimeTime = 0; // force fresh regime check on next scan
     getMarketRegime();  // run immediately so badge populates right away
     scheduleAutoScan(15); // first scan in 15 s
+    pushCredentialsToServer(); // sync to Render so it keeps trading if browser closes
   } else {
     btn.textContent    = '🤖 AUTO OFF';
     btn.style.color    = '';
@@ -4477,6 +4484,9 @@ function updateTradeModalSummary(price) {
 document.addEventListener('DOMContentLoaded', () => {
   // Auto-connect if credentials saved from a previous session / other device
   autoConnectIfSaved();
+  // Check server-side auto-trading status
+  setTimeout(checkServerStatus, 3000);
+  setInterval(checkServerStatus, 60000); // refresh every minute
 
   ['levSlider','tradeValue','tradeValuePct','tradeTp','tradeSl'].forEach(id => {
     const el = document.getElementById(id);

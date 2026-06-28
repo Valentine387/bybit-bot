@@ -272,7 +272,46 @@ class BybitProxyHandler(BaseHTTPRequestHandler):
             self.handle_instrument(params)
         elif path == "/ping" or path == "/healthz":
             # Simple connectivity test — Render uses /healthz for health checks
-            self.send_json(200, {"status": "proxy_ok", "url": BASE_URL, "demo": USE_DEMO})
+            self.send_json(200, {
+                "status": "proxy_ok", "url": BASE_URL, "demo": USE_DEMO,
+                "auto_enabled": _auto_creds['auto_enabled'],
+                "regime": _last_regime,
+                "open_positions": len(_open_positions),
+            })
+
+        elif path == "/set-credentials":
+            # Browser pushes API keys + settings to server for autonomous trading
+            body = json.loads(self.rfile.read(int(self.headers.get('Content-Length',0))))
+            _auto_creds['api_key']       = body.get('api_key','')
+            _auto_creds['api_secret']    = body.get('api_secret','')
+            _auto_creds['trading_mode']  = body.get('trading_mode','linear')
+            _auto_creds['trade_size']    = float(body.get('trade_size', 100))
+            _auto_creds['tp_pct']        = float(body.get('tp_pct', 15))
+            _auto_creds['sl_pct']        = float(body.get('sl_pct', 3))
+            _auto_creds['min_confidence']= float(body.get('min_confidence', 75))
+            enabled = body.get('auto_enabled', False)
+            _auto_creds['auto_enabled']  = bool(enabled)
+            print(f"  [AutoTrader] Credentials updated — auto={'ON' if enabled else 'OFF'} mode={_auto_creds['trading_mode']} size=${_auto_creds['trade_size']}")
+            self.send_json(200, {"status": "ok", "auto_enabled": _auto_creds['auto_enabled']})
+
+        elif path == "/auto-status":
+            # Get current autonomous trading status
+            self.send_json(200, {
+                "auto_enabled":   _auto_creds['auto_enabled'],
+                "has_credentials": bool(_auto_creds['api_key']),
+                "regime":         _last_regime,
+                "open_positions": len(_open_positions),
+                "trading_mode":   _auto_creds['trading_mode'],
+                "trade_size":     _auto_creds['trade_size'],
+                "min_confidence": _auto_creds['min_confidence'],
+            })
+
+        elif path == "/auto-toggle":
+            # Toggle auto trading on/off
+            _auto_creds['auto_enabled'] = not _auto_creds['auto_enabled']
+            state = 'ON' if _auto_creds['auto_enabled'] else 'OFF'
+            print(f"  [AutoTrader] Auto-trading toggled {state}")
+            self.send_json(200, {"auto_enabled": _auto_creds['auto_enabled'], "status": state})
         elif path == "/test":
             # Test API keys with simplest possible Bybit call
             self.handle_test(api_key, api_secret)
@@ -776,6 +815,337 @@ if __name__ == "__main__":
             time.sleep(600)
             sync_bybit_time()
     threading.Thread(target=_periodic_time_sync, daemon=True).start()
+
+
+
+# ══════════════════════════════════════════════════════════════════════
+# AUTONOMOUS TRADING ENGINE — runs on Render 24/7
+# Scans Bybit every 5 minutes, places trades without any browser open
+# Credentials stored via /set-credentials endpoint from the browser
+# ══════════════════════════════════════════════════════════════════════
+
+import math
+
+# Stored credentials from browser login
+_auto_creds = {
+    'api_key': os.environ.get('BYBIT_API_KEY', ''),
+    'api_secret': os.environ.get('BYBIT_API_SECRET', ''),
+    'trading_mode': os.environ.get('TRADING_MODE', 'linear'),
+    'trade_size': float(os.environ.get('TRADE_SIZE', '100')),
+    'tp_pct': float(os.environ.get('TP_PCT', '15')),
+    'sl_pct': float(os.environ.get('SL_PCT', '3')),
+    'auto_enabled': os.environ.get('AUTO_TRADING', 'false').lower() == 'true',
+    'min_confidence': float(os.environ.get('MIN_CONFIDENCE', '75')),
+}
+_open_positions = {}  # symbol -> position data
+_last_regime = 'UNKNOWN'
+
+def _bybit_request(method, path, params=None, body=None, api_key=None, api_secret=None):
+    """Make authenticated Bybit API request from server side"""
+    key = api_key or _auto_creds['api_key']
+    secret = api_secret or _auto_creds['api_secret']
+    if not key or not secret:
+        return None
+    try:
+        ts = str(int(time.time() * 1000) + time_offset_ms)
+        recv_window = '5000'
+        if method == 'GET':
+            query = urllib.parse.urlencode(params or {})
+            sign_str = ts + key + recv_window + query
+        else:
+            sign_str = ts + key + recv_window + json.dumps(body or {})
+        sig = hmac.new(secret.encode(), sign_str.encode(), hashlib.sha256).hexdigest()
+        headers = {
+            'X-BAPI-API-KEY': key,
+            'X-BAPI-TIMESTAMP': ts,
+            'X-BAPI-SIGN': sig,
+            'X-BAPI-RECV-WINDOW': recv_window,
+            'Content-Type': 'application/json',
+        }
+        url = BASE_URL + path
+        if method == 'GET' and params:
+            url += '?' + urllib.parse.urlencode(params)
+        data = json.dumps(body).encode() if body else None
+        req = urllib.request.Request(url, data=data, headers=headers, method=method)
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return json.loads(r.read())
+    except Exception as e:
+        print(f'  [AutoTrader] API error {path}: {e}')
+        return None
+
+def _get_klines(symbol, interval, limit=100):
+    """Fetch candles from Bybit"""
+    try:
+        url = f'{BASE_URL}/v5/market/kline?symbol={symbol}&interval={interval}&limit={limit}&category={_auto_creds["trading_mode"]}'
+        req = urllib.request.Request(url, headers={'User-Agent':'AlgoRhythm/1.0'})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            d = json.loads(r.read())
+        raw = d.get('result',{}).get('list',[])
+        if not raw: return None
+        candles = []
+        for c in reversed(raw):
+            candles.append({
+                'open':float(c[1]),'high':float(c[2]),'low':float(c[3]),
+                'close':float(c[4]),'volume':float(c[5])
+            })
+        return candles
+    except Exception as e:
+        return None
+
+def _calc_adx(candles, period=14):
+    if len(candles) < period*2+1: return None
+    tr,pdm,mdm = [],[],[]
+    for i in range(1,len(candles)):
+        c,p = candles[i],candles[i-1]
+        tr.append(max(c['high']-c['low'],abs(c['high']-p['close']),abs(c['low']-p['close'])))
+        up,dn = c['high']-p['high'], p['low']-c['low']
+        pdm.append(up if up>dn and up>0 else 0)
+        mdm.append(dn if dn>up and dn>0 else 0)
+    def wilder(arr,p):
+        s=sum(arr[:p]); out=[s]
+        for i in range(p,len(arr)): s=s-s/p+arr[i]; out.append(s)
+        return out
+    trs,ps,ms = wilder(tr,period),wilder(pdm,period),wilder(mdm,period)
+    dx=[100*abs(100*ps[i]/trs[i]-100*ms[i]/trs[i])/((100*ps[i]/trs[i]+100*ms[i]/trs[i]) or 1) if trs[i] else 0 for i in range(len(trs))]
+    if len(dx)<period: return None
+    return sum(dx[-period:])/period
+
+def _calc_ma(prices, period):
+    if len(prices)<period: return None
+    return sum(prices[-period:])/period
+
+def _calc_rsi(prices, period=14):
+    if len(prices)<period+1: return None
+    gains,losses=0,0
+    for i in range(len(prices)-period,len(prices)):
+        d=prices[i]-prices[i-1]
+        if d>0: gains+=d
+        else: losses-=d
+    ag,al=gains/period,losses/period
+    if al==0: return 100
+    return 100-100/(1+ag/al)
+
+def _check_regime():
+    global _last_regime
+    try:
+        c4h = _get_klines('BTCUSDT','240',100)
+        if not c4h or len(c4h)<50: return _last_regime
+        closes=[c['close'] for c in c4h]
+        adx=_calc_adx(c4h,14)
+        ma50=_calc_ma(closes,50)
+        ma50p=_calc_ma(closes[:-5],50)
+        slope_up = ma50 > ma50p if ma50 and ma50p else False
+        cur=closes[-1]
+        if not adx or adx<18:
+            regime='RANGING'
+        elif adx<22:
+            regime='TRENDING_UP' if (slope_up and cur>ma50) else ('TRENDING_DOWN' if (not slope_up and cur<ma50) else 'RANGING')
+        else:
+            regime='TRENDING_UP' if (slope_up and cur>ma50) else ('TRENDING_DOWN' if (not slope_up and cur<ma50) else 'RANGING')
+        if regime != _last_regime:
+            print(f'  [AutoTrader] 🌡️ Regime changed: {_last_regime} → {regime} | ADX={adx:.1f}')
+        _last_regime = regime
+        return regime
+    except Exception as e:
+        return _last_regime
+
+def _scan_symbol(symbol):
+    """Run AlgoRhythm 4-condition check on a symbol server-side"""
+    try:
+        c30m = _get_klines(symbol,'30',100)
+        c4h  = _get_klines(symbol,'240',60)
+        if not c30m or len(c30m)<30: return None
+        closes=[c['close'] for c in c30m]
+        n=len(closes)
+        cur=closes[-1]
+        rh=max(c['high'] for c in c30m[-22:-2])
+        rl=min(c['low']  for c in c30m[-22:-2])
+        up_break=cur>rh; dn_break=cur<rl
+        if not up_break and not dn_break: return None
+        direction=1 if up_break else -1
+        adx=_calc_adx(c30m,14)
+        if not adx or adx<20: return None
+        ma20=_calc_ma(closes,20)
+        if not ma20: return None
+        if direction==1 and cur<ma20: return None
+        if direction==-1 and cur>ma20: return None
+        # MA votes
+        sma50=_calc_ma(closes,50); ema_c=closes[-1]
+        ma_v=0
+        if direction==1:
+            if cur>ma20: ma_v+=1
+            if ma20 and sma50 and ma20>sma50: ma_v+=1
+            if ma_v>=1: ma_v+=1  # simplified EMA proxy
+        else:
+            if cur<ma20: ma_v+=1
+            if ma20 and sma50 and ma20<sma50: ma_v+=1
+            if ma_v>=1: ma_v+=1
+        if ma_v<3: return None
+        rsi=_calc_rsi(closes,14)
+        if rsi is None: return None
+        if direction==1 and not (35<=rsi<=75): return None
+        if direction==-1 and not (25<=rsi<=65): return None
+        # H4 check (soft)
+        h4_ok=True
+        if c4h and len(c4h)>=20:
+            h4cl=[c['close'] for c in c4h]
+            h4ma=_calc_ma(h4cl,50)
+            if h4ma:
+                h4_ok=(direction==1 and h4cl[-1]>h4ma) or (direction==-1 and h4cl[-1]<h4ma)
+        # Score
+        score=40
+        if up_break or dn_break: score+=15
+        if adx>=25: score+=12
+        elif adx>=20: score+=8
+        if ma_v>=3: score+=10
+        if h4_ok: score+=8
+        rsi_ok=(direction==1 and rsi<60) or (direction==-1 and rsi>40)
+        if rsi_ok: score+=10
+        score=min(100,score)
+        return {'symbol':symbol,'direction':direction,'score':score,'adx':adx,'rsi':rsi,'price':cur}
+    except Exception as e:
+        return None
+
+SCAN_SYMBOLS = [
+    'BTCUSDT','ETHUSDT','SOLUSDT','XRPUSDT','DOGEUSDT','BNBUSDT',
+    'ADAUSDT','AVAXUSDT','LINKUSDT','DOTUSDT','UNIUSDT','LTCUSDT',
+    'NEARUSDT','INJUSDT','ARBUSDT','OPUSDT','SUIUSDT','APTUSDT',
+    'TONUSDT','HYPEUSDT','PEPEUSDT','SHIBUSDT','WIFUSDT','BONKUSDT',
+    'TRXUSDT','XLMUSDT','ATOMUSDT','FILUSDT','RENDERUSDT','FETUSDT',
+]
+
+def _get_positions():
+    """Fetch open positions from Bybit"""
+    global _open_positions
+    try:
+        r = _bybit_request('GET','/v5/position/list',{'category':_auto_creds['trading_mode'],'settleCoin':'USDT'})
+        if r and r.get('retCode')==0:
+            positions={}
+            for p in r.get('result',{}).get('list',[]):
+                if float(p.get('size',0))>0:
+                    positions[p['symbol']]=p
+            _open_positions=positions
+            return positions
+    except: pass
+    return _open_positions
+
+def _place_order(symbol, side, size, price):
+    """Place a market order on Bybit"""
+    try:
+        mode=_auto_creds['trading_mode']
+        # Get instrument info for qty step
+        info_r=_bybit_request('GET','/v5/market/instruments-info',{'category':mode,'symbol':symbol})
+        qty_step=0.001
+        min_notional=1
+        if info_r and info_r.get('retCode')==0:
+            lst=info_r.get('result',{}).get('list',[])
+            if lst:
+                lot=lst[0].get('lotSizeFilter',{})
+                qty_step=float(lot.get('qtyStep',0.001))
+                min_notional=float(lot.get('minOrderAmt',1))
+        raw_qty=size/price
+        qty=math.floor(raw_qty/qty_step)*qty_step
+        step_decs=len(str(qty_step).rstrip('0').split('.')[-1]) if '.' in str(qty_step) else 0
+        qty=round(qty,step_decs)
+        if qty*price<max(min_notional,0.5):
+            print(f'  [AutoTrader] {symbol}: order too small ({qty*price:.2f} < {min_notional})')
+            return False
+        body={'category':mode,'symbol':symbol,'side':side,'orderType':'Market','qty':str(qty)}
+        if mode=='linear': body['leverage']='1'
+        r=_bybit_request('POST','/v5/order/create',body=body)
+        if r and r.get('retCode')==0:
+            print(f'  [AutoTrader] ✅ {side} {symbol}: {qty} units @ ~${price:.4f} (${qty*price:.2f})')
+            return True
+        else:
+            print(f'  [AutoTrader] ❌ Order failed {symbol}: {r}')
+            return False
+    except Exception as e:
+        print(f'  [AutoTrader] Order error {symbol}: {e}')
+        return False
+
+def _auto_trading_loop():
+    """Main autonomous trading loop — runs every 5 minutes on Render"""
+    import random
+    # Stagger start to not hammer API immediately
+    time.sleep(30)
+    print('  [AutoTrader] 🤖 Autonomous trading engine started')
+    scan_interval = int(os.environ.get('SCAN_INTERVAL_SECS', '300'))  # 5 min default
+
+    while True:
+        try:
+            if not _auto_creds['auto_enabled']:
+                time.sleep(30)
+                continue
+            if not _auto_creds['api_key'] or not _auto_creds['api_secret']:
+                time.sleep(60)
+                continue
+
+            print(f'  [AutoTrader] 🔍 Scanning {len(SCAN_SYMBOLS)} symbols...')
+
+            # Check market regime
+            regime=_check_regime()
+            if regime=='RANGING':
+                print(f'  [AutoTrader] ↔️ Market ranging — skipping this scan')
+                time.sleep(scan_interval)
+                continue
+
+            allowed_dirs=[1] if regime=='TRENDING_UP' else ([-1] if regime=='TRENDING_DOWN' else [1,-1])
+
+            # Get current positions
+            positions=_get_positions()
+            if len(positions)>=6:
+                print(f'  [AutoTrader] Max positions reached ({len(positions)}) — skipping')
+                time.sleep(scan_interval)
+                continue
+
+            # Scan all symbols
+            signals=[]
+            for sym in SCAN_SYMBOLS:
+                if sym in positions:
+                    continue  # already in position
+                result=_scan_symbol(sym)
+                if result and result['direction'] in allowed_dirs:
+                    signals.append(result)
+                time.sleep(0.3)  # rate limit
+
+            if not signals:
+                print(f'  [AutoTrader] No qualifying signals this scan (regime={regime})')
+                time.sleep(scan_interval)
+                continue
+
+            # Sort by score, take best
+            signals.sort(key=lambda x: x['score'], reverse=True)
+            min_conf=_auto_creds['min_confidence']
+            strong=[s for s in signals if s['score']>=min_conf]
+
+            if not strong:
+                best=signals[0]
+                print(f'  [AutoTrader] Best: {best["symbol"]} {best["score"]:.0f}% — below {min_conf}% threshold')
+                time.sleep(scan_interval)
+                continue
+
+            # Place trades for top signals
+            trades_this_cycle=0
+            for sig in strong[:3]:  # max 3 trades per scan
+                if len(positions)+trades_this_cycle>=6: break
+                sym=sig['symbol']
+                side='Buy' if sig['direction']==1 else 'Sell'
+                size=_auto_creds['trade_size']
+                print(f'  [AutoTrader] 🔥 {sym} {side} {sig["score"]:.0f}% ADX={sig["adx"]:.0f} RSI={sig["rsi"]:.0f}')
+                if _place_order(sym, side, size, sig['price']):
+                    trades_this_cycle+=1
+                    time.sleep(1)
+
+            print(f'  [AutoTrader] Cycle complete — {trades_this_cycle} trades placed. Next scan in {scan_interval//60}min')
+
+        except Exception as e:
+            print(f'  [AutoTrader] Loop error: {e}')
+
+        time.sleep(scan_interval)
+
+# Start autonomous engine in background thread
+_auto_thread = threading.Thread(target=_auto_trading_loop, daemon=True)
+_auto_thread.start()
 
     server = HTTPServer(("0.0.0.0", PORT), BybitProxyHandler)
     try:
