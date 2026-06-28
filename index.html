@@ -1493,12 +1493,13 @@ async function pushCredentialsToServer() {
         tp_pct:         cfg.defaultTP || 15,
         sl_pct:         cfg.defaultSLCrypto || 3,
         min_confidence: AUTO_TRADE_THRESH || 75,
-        auto_enabled:   autoScanEnabled,
       })
     });
     const d = await r.json().catch(() => ({}));
-    log('INFO', `🖥️ Server auto-trading: ${d.auto_enabled ? 'ON ✅ — trades 24/7 without browser' : 'credentials saved'}`);
-    updateServerStatusBadge(d.auto_enabled);
+    // Silently update badge — no log message on every connect
+    if (typeof d.auto_enabled !== 'undefined') {
+      updateServerStatusBadge(d.auto_enabled);
+    }
   } catch(e) {
     // Silent — server may not have the endpoint yet
   }
