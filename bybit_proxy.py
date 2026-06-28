@@ -1147,8 +1147,8 @@ def _auto_trading_loop():
 _auto_thread = threading.Thread(target=_auto_trading_loop, daemon=True)
 _auto_thread.start()
 
-    server = HTTPServer(("0.0.0.0", PORT), BybitProxyHandler)
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        print("\n  Proxy stopped.")
+server = HTTPServer(("0.0.0.0", PORT), BybitProxyHandler)
+try:
+    server.serve_forever()
+except KeyboardInterrupt:
+    print("\n  Proxy stopped.")
