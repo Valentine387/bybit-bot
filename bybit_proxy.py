@@ -1050,6 +1050,10 @@ def _check_regime():
 def _scan_symbol(symbol, category=None):
     """Run AlgoRhythm 4-condition check on a symbol server-side"""
     try:
+        # Skip stablecoins — they never move so never generate breakout signals
+        STABLECOINS = {'USDC','USDT','USDE','USD1','USDTEUR','USDTBRL','USDCEUR','USDCUSDT','USDEUSDT','USD1USDT'}
+        if symbol in STABLECOINS: return None
+        if symbol.startswith('USDC') or symbol.startswith('USDT') or symbol.startswith('USDE'): return None
         # Determine category: non-USDT pairs use spot, USDT pairs use configured mode
         cat = category or (_auto_creds['trading_mode'] if symbol.endswith('USDT') else 'spot')
         c30m = _get_klines(symbol,'30',100, category=cat)
@@ -1106,26 +1110,34 @@ def _scan_symbol(symbol, category=None):
     except Exception as e:
         return None
 
+# Clean coin list — stablecoins and unknown tokens removed
+# Only real crypto with enough volatility to generate signals
 SCAN_SYMBOLS = [
-    'BTCUSDT', 'ETHUSDT', 'USDCUSDT', 'HYPEUSDT', 'SOLUSDT', 'XRPUSDT',
-    'HUSDT', 'WLDUSDT', 'SAHARAUSDT', 'MNTUSDT', 'BILLUSDT', 'VIRTUALUSDT',
-    'ADAUSDT', 'LITUSDT', 'LTCUSDT', 'NEARUSDT', 'TONUSDT', 'MONUSDT',
-    'XAUTUSDT', 'HOLOUSDT', 'ASTERUSDT', 'AVAXUSDT', 'ONDOUSDT', 'USD1USDT',
-    'ENAUSDT', 'VVVUSDT', 'DOGEUSDT', 'XPLUSDT', 'SUIUSDT', 'IPUSDT',
-    'LINKUSDT', 'CCUSDT', 'AAVEUSDT', 'BSBUSDT', 'USDEUSDT', 'BBSOLUSDT',
-    'BNBUSDT', 'XLMUSDT', 'TRXUSDT', 'PEPEUSDT', 'SHIBUSDT', 'DOTUSDT',
-    'UNIUSDT', 'APTUSDT', 'ARBUSDT', 'OPUSDT', 'FILUSDT', 'ATOMUSDT',
-    'INJUSDT', 'TIAUSDT', 'FETUSDT', 'RENDERUSDT', 'WIFUSDT', 'BONKUSDT',
-    'FLOKIUSDT', 'POPCATUSDT', 'MEWUSDT', 'BRETTUSDT', 'PENDLEUSDT', 'IMXUSDT',
-    'THETAUSDT', 'GALAUSDT', 'ALGOUSDT', 'VETUSDT', 'HBARUSDT', 'XMRUSDT',
-    'EOSUSDT', 'BCHUSDT', 'ETCUSDT', 'ZECUSDT', 'KASUSDT', 'CFXUSDT',
-    'STXUSDT', 'SEIUSDT', 'BEAMUSDT', 'FTMUSDT', 'SANDUSDT', 'MANAUSDT',
-    'AXSUSDT', 'CRVUSDT', 'MKRUSDT', 'LDOUSDT', 'SNXUSDT', 'COMPUSDT',
-    'GMXUSDT', 'DYDXUSDT', 'RUNEUSDT', 'KSMUSDT',
+    # Major coins
+    'BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'XRPUSDT', 'DOGEUSDT', 'BNBUSDT',
+    'ADAUSDT', 'AVAXUSDT', 'LINKUSDT', 'DOTUSDT', 'LTCUSDT', 'NEARUSDT',
+    # Mid caps
+    'TONUSDT', 'HYPEUSDT', 'HOLOUSDT', 'ASTERUSDT', 'ONDOUSDT', 'ENAUSDT',
+    'SUIUSDT', 'INJUSDT', 'TIAUSDT', 'FETUSDT', 'RENDERUSDT', 'WLDUSDT',
+    'VIRTUALUSDT', 'XAUTUSDT', 'BILLUSDT', 'MNTUSDT', 'SAHARAUSDT',
+    # DeFi
+    'AAVEUSDT', 'UNIUSDT', 'CRVUSDT', 'MKRUSDT', 'LDOUSDT', 'SNXUSDT',
+    'COMPUSDT', 'GMXUSDT', 'DYDXUSDT', 'ARBUSDT', 'OPUSDT', 'APTUSDT',
+    # Meme coins
+    'PEPEUSDT', 'SHIBUSDT', 'WIFUSDT', 'BONKUSDT', 'FLOKIUSDT',
+    'POPCATUSDT', 'MEWUSDT', 'BRETTUSDT', 'VVVUSDT',
+    # Layer 1
+    'XLMUSDT', 'TRXUSDT', 'ATOMUSDT', 'FILUSDT', 'ALGOUSDT', 'VETUSDT',
+    'HBARUSDT', 'XMRUSDT', 'EOSUSDT', 'BCHUSDT', 'ETCUSDT', 'ZECUSDT',
+    # Other
+    'KASUSDT', 'CFXUSDT', 'STXUSDT', 'SEIUSDT', 'FTMUSDT', 'SANDUSDT',
+    'MANAUSDT', 'AXSUSDT', 'PENDLEUSDT', 'IMXUSDT', 'THETAUSDT', 'GALAUSDT',
+    'HBARUSDT', 'RUNEUSDT', 'KSMUSDT', 'IPUSDT', 'BEAMUSDT', 'LITUSDT',
 ]
+
+# Spot pairs — only real crypto, no stablecoins
 SPOT_SCAN_SYMBOLS = [
-    'ETHEUR', 'BTCEUR', 'BTCUSDC', 'USDTEUR', 'USDTBRL', 'ETHUSDC',
-    'XRPEUR', 'HMNT', 'ETHBTC', 'SOLEUR', 'USDCEUR', 'BBSOLUSDC',
+    'ETHBTC', 'BTCUSDC', 'ETHUSDC', 'BTCEUR', 'ETHEUR', 'XRPEUR', 'SOLEUR',
 ]
 
 
@@ -1205,7 +1217,10 @@ def _auto_trading_loop():
                 time.sleep(scan_interval)
                 continue
 
+            # TRENDING_UP = longs only, TRENDING_DOWN = shorts only
+            # UNKNOWN = both directions allowed (no BTC data / unclear)
             allowed_dirs=[1] if regime=='TRENDING_UP' else ([-1] if regime=='TRENDING_DOWN' else [1,-1])
+            print(f'  [AutoTrader] 🌡️ Regime: {regime} | Allowed: {"LONG" if allowed_dirs==[1] else "SHORT" if allowed_dirs==[-1] else "BOTH"} | Mode: {_auto_creds["trading_mode"]}')
 
             # Get current positions
             positions=_get_positions()
@@ -1227,6 +1242,8 @@ def _auto_trading_loop():
 
             if not signals:
                 print(f'  [AutoTrader] No qualifying signals this scan (regime={regime})')
+                # Show what came close
+                print(f'  [AutoTrader] Scanned {len(all_scan)} symbols — all filtered out by: breakout/ADX/MA/RSI conditions')
                 time.sleep(scan_interval)
                 continue
 
@@ -1237,7 +1254,8 @@ def _auto_trading_loop():
 
             if not strong:
                 best=signals[0]
-                print(f'  [AutoTrader] Best: {best["symbol"]} {best["score"]:.0f}% — below {min_conf}% threshold')
+                print(f'  [AutoTrader] Best signal: {best["symbol"]} {best["score"]:.0f}% — below {min_conf}% threshold (need {min_conf}%+)')
+                print(f'  [AutoTrader] Top 3: {[(s["symbol"],s["score"]) for s in signals[:3]]}')
                 time.sleep(scan_interval)
                 continue
 
