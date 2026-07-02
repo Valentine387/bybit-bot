@@ -912,7 +912,7 @@ async function analyseMultiTF(symbol) {
     pass: aligned,
     score: Math.min(totalScore, 30),
     passing, total: tfs.length,
-    detail: `${passing}/4 timeframes bullish`,
+    detail: `${passing}/4 timeframes ${passing>2?'bullish':'bearish/mixed'}`,
     timeframes: tfs
   };
 }
@@ -1392,11 +1392,11 @@ function detectWyckoffPhase(candles) {
     phase = 'Markup'; score = 20; tradeable = true;
     detail = 'Rising price + rising/stable volume → markup phase';
   } else if (rangeRatio < 0.06 && priceTrend > 1.01) {
-    phase = 'Distribution'; score = 0; tradeable = false;
-    detail = 'Sideways at highs → potential distribution, caution';
+    phase = 'Distribution'; score = 10; tradeable = true;
+    detail = 'Sideways at highs → distribution, watch for SHORT setup';
   } else if (priceTrend < 0.98) {
-    phase = 'Markdown'; score = 0; tradeable = false;
-    detail = 'Falling price → markdown phase, no longs';
+    phase = 'Markdown'; score = 15; tradeable = true;
+    detail = 'Falling price → markdown phase, SHORT opportunities';
   } else {
     phase = 'Transition'; score = 5; tradeable = true;
     detail = 'Unclear phase — proceed with caution';
@@ -1446,15 +1446,20 @@ async function analyseSymbol(symbol) {
     const confidence = Math.min(Math.round(rawScore/maxScore*100), 99);
 
     // Determine direction from layer votes (majority wins)
-    const dirVotes = {
-      1:  (layer1.direction===1?1:0) + (layer3.direction===1?1:0) +
-          (layer5.direction===1?1:0) + (layer6.direction===1?1:0) +
-          (layer7.direction===1?1:0) + (layer4.direction===1?1:0),
-      [-1]: (layer1.direction===-1?1:0) + (layer3.direction===-1?1:0) +
-            (layer5.direction===-1?1:0) + (layer6.direction===-1?1:0) +
-            (layer7.direction===-1?1:0) + (layer4.direction===-1?1:0),
-    };
-    const direction = dirVotes[1] >= dirVotes[-1] ? 1 : -1;
+    // Get multi-TF direction (majority of timeframes)
+    const mtfDir = layer2.timeframes
+      ? (layer2.timeframes.filter(t=>t.direction===1).length >= 2 ? 1 :
+         layer2.timeframes.filter(t=>t.direction===-1).length >= 2 ? -1 : 0)
+      : 0;
+    const longVotes  = (layer1.direction===1?2:0) + (layer3.direction===1?1:0) +
+                       (layer5.direction===1?2:0) + (layer6.direction===1?2:0) +
+                       (layer7.direction===1?1:0) + (layer4.direction===1?1:0) +
+                       (mtfDir===1?2:0);
+    const shortVotes = (layer1.direction===-1?2:0) + (layer3.direction===-1?1:0) +
+                       (layer5.direction===-1?2:0) + (layer6.direction===-1?2:0) +
+                       (layer7.direction===-1?1:0) + (layer4.direction===-1?1:0) +
+                       (mtfDir===-1?2:0);
+    const direction = longVotes >= shortVotes ? 1 : -1;
     const isStrong = confidence >= cfg.minConfidence;
     const patternName = layer7.pattern;
 
@@ -1600,15 +1605,15 @@ async function analyseSymbol(symbol) {
       </div>
       <div class="score-item">
         <div class="score-item-label">EMA Cross</div>
-        <div class="score-item-val ${layer6.emaCross?'pass':'neutral'}">
-          ${layer6.emaCross?'✅ EMA8>21':'—'}
+        <div class="score-item-val ${layer6.emaBull?'pass':layer6.emaBear?'fail':'neutral'}">
+          ${layer6.emaBull?'▲ EMA8>21':layer6.emaBear?'▼ EMA8<21':'—'}
         </div>
       </div>
     `;
     document.getElementById('scoreGridSection').style.display = 'block';
 
     // Store result for auto-trading
-    return { symbol, confidence, direction:1, slPrice, tpPrice, atr, cur };
+    return { symbol, confidence, direction, slPrice, tpPrice, atr, cur };
 
   } catch(e) {
     document.getElementById('signalHero').innerHTML =
