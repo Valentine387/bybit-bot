@@ -1494,7 +1494,7 @@ async function pushCredentialsToServer() {
         trade_size:     cfg.defaultSize || 100,
         tp_pct:         cfg.defaultTP || 15,
         sl_pct:         cfg.defaultSLCrypto || 3,
-        min_confidence: AUTO_TRADE_THRESH || 75,
+        min_confidence: AUTO_TRADE_THRESH || 60,
       })
     });
     const d = await r.json().catch(() => ({}));
@@ -1574,7 +1574,7 @@ async function toggleServerAutoTrading() {
         trade_size:     cfg.defaultSize || 100,
         tp_pct:         cfg.defaultTP || 15,
         sl_pct:         cfg.defaultSLCrypto || 3,
-        min_confidence: AUTO_TRADE_THRESH || 75,
+        min_confidence: AUTO_TRADE_THRESH || 60,
         auto_enabled:   !status.auto_enabled, // set to desired new state directly
       })
     });
@@ -3556,7 +3556,7 @@ async function scanTicker(t) {
     if (botRunning) {
       const patTag = ai.patternName && ai.patternName!=='None' ? ` | ${ai.patternName}` : '';
       log('INFO',`${t}: ${sig} (${ai.confidence}%)${patTag} — ${ai.reason}`);
-      if (sig !== 'HOLD' && ai.confidence >= 75) notifySignal(t, ai.direction, ai.confidence, ai.patternName);
+      if (sig !== 'HOLD' && ai.confidence >= 60) notifySignal(t, ai.direction, ai.confidence, ai.patternName);
       if (ai.reasons?.length > 1) ai.reasons.slice(0, 4).forEach(r => log('INFO', `  → ${r}`));
 
       // ── Strict filters before trading ─────────────────────────────────
@@ -4173,7 +4173,7 @@ function toggleRecTicker(sym) {
 }
 
 // ── Recommendation Scanner — AlgoRhythm Engine, scores every ticker 50–100 ──
-// ≥80% = STRONG signal · 65–79% = WATCH · 50–64% = HOLD/WAIT
+// ≥80% = STRONG signal · 60–79% = GOOD signal (auto-trades) · <60% = HOLD/WAIT
 // Never hides results — always shows all tickers with their score
 async function scanRecommendations() {
   if (recScanning) return;
@@ -4468,14 +4468,14 @@ function getAllowedDirections(regime) {
 }
 
 // ── Auto-Scan & Auto-Trade ────────────────────────────────────────────
-// Scans all 100 coins every 5 min; auto-places $10 trades on STRONG signals (score ≥ 80)
+// Scans all 100 coins every 5 min; auto-places trades on signals scoring ≥ 60%
 let autoScanEnabled  = false;
 let autoScanTimer    = null;
 let autoScanCdTimer  = null;
 let autoScanSecsLeft = 0;
 const AUTO_SCAN_INTERVAL = 5 * 60; // seconds
 const AUTO_TRADE_SIZE    = 100;
-const AUTO_TRADE_THRESH  = 75; // lowered from 85 — was blocking all trades
+const AUTO_TRADE_THRESH  = 60; // 60%+ = auto-trade (4/7 indicators agree)
 const MAX_CONCURRENT_TRADES = 6; // hard cap on open positions at once — prevents over-exposure in a market-wide move
 
 function toggleAutoScan() {
@@ -4668,7 +4668,7 @@ function updateAnalysisPanel(results) {
     const isShort = r.signal === 'SHORT';
     const sigColor = isLong ? 'var(--green)' : isShort ? 'var(--red)' : 'var(--muted)';
     const sigIcon  = isLong ? '▲' : isShort ? '▼' : '—';
-    const confColor = conf >= 75 ? 'var(--green)' : conf >= 62 ? 'var(--amber)' : 'var(--muted)';
+    const confColor = conf >= 80 ? 'var(--green)' : conf >= 60 ? 'var(--amber)' : 'var(--muted)';
     const pat     = r.patternName && r.patternName !== 'None' ? `<div style="color:var(--purple);font-size:8px;margin-top:1px">⬡ ${r.patternName}</div>` : '';
     const perfect = r.perfectSetup ? '<span style="color:var(--green);font-size:8px"> ✅</span>' : '';
     const reanalyse = slReanalysePending[r.ticker] ? '<span style="color:var(--amber);font-size:8px"> 🔄</span>' : '';
@@ -5762,19 +5762,19 @@ function showSignalPopup(signal) {
     <div style="background:var(--card2);border-radius:10px;padding:12px 14px;margin-bottom:10px">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
         <span style="font-size:9px;color:var(--muted);letter-spacing:0.12em;text-transform:uppercase">AlgoRhythm Score (3-Layer Engine)</span>
-        <span style="font-size:20px;font-weight:700;color:${signal.confidence>=80?'var(--green)':signal.confidence>=75?'#86efac':'var(--amber)'}">${signal.confidence}%</span>
+        <span style="font-size:20px;font-weight:700;color:${signal.confidence>=80?'var(--green)':signal.confidence>=60?'#86efac':'var(--amber)'}">${signal.confidence}%</span>
       </div>
       <!-- Progress bar -->
       <div style="background:rgba(255,255,255,0.06);border-radius:4px;height:7px;overflow:hidden;margin-bottom:6px">
         <div style="
           height:100%;width:${signal.confidence}%;
-          background:${signal.confidence>=80?'linear-gradient(90deg,var(--green),#86efac)':signal.confidence>=75?'linear-gradient(90deg,var(--amber),#fde68a)':'linear-gradient(90deg,var(--amber),var(--green))'};
+          background:${signal.confidence>=80?'linear-gradient(90deg,var(--green),#86efac)':signal.confidence>=60?'linear-gradient(90deg,var(--amber),#fde68a)':'linear-gradient(90deg,var(--red),var(--amber))'};
           border-radius:4px;
         "></div>
       </div>
       <div style="display:flex;justify-content:space-between;align-items:center">
-        <span style="font-size:10px;color:${signal.confidence>=80?'var(--green)':signal.confidence>=75?'var(--green)':'var(--amber)'};font-weight:600">
-          ${signal.confidence>=85?`🔥 STRONG ${signal.direction===-1?'SELL':'BUY'}`:signal.confidence>=78?`✅ CONFIRMED ${signal.direction===-1?'SELL':'BUY'}`:`👀 WATCH — ${signal.direction===-1?'SELL':'BUY'}`}
+        <span style="font-size:10px;color:${signal.confidence>=80?'var(--green)':signal.confidence>=60?'var(--green)':'var(--amber)'};font-weight:600">
+          ${signal.confidence>=80?`🔥 STRONG ${signal.direction===-1?'SELL':'BUY'}`:signal.confidence>=60?`✅ TRADE ${signal.direction===-1?'SELL':'BUY'}`:`👀 WATCH — ${signal.direction===-1?'SELL':'BUY'}`}
         </span>
         <span style="font-size:9px;color:var(--muted)">min 70% to alert</span>
       </div>
