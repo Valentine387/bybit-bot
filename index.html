@@ -3149,12 +3149,14 @@ async function placeBuy(ticker, price) {
     }
   }
 
-  const size = baseSize * leverage;
+  // size = actual USD notional to trade (e.g. $100)
+  // leverage is applied by Bybit automatically — we don't multiply here
+  const size = baseSize; // Always use actual dollar amount, not baseSize * leverage
   try {
     const acct = await bybitGet('/account');
     const avail = parseFloat(acct.available_balance || acct.equity || 0);
-    if (size > avail * 0.8) {
-      log('INFO', `${ticker}: $${size} exceeds 80% balance cap (avail: $${avail.toFixed(2)}) — skipping`);
+    if (size > avail * 0.95) {
+      log('INFO', `${ticker}: $${size} exceeds 95% balance cap (avail: $${avail.toFixed(2)}) — skipping`);
       return;
     }
   } catch(e) {}
@@ -3166,7 +3168,7 @@ async function placeBuy(ticker, price) {
       log('ERR', `${ticker}: Order $${notional.toFixed(4)} below Bybit minimum $${minNotional} — raise trade size above $${Math.ceil(minNotional)}`);
       return;
     }
-    log('INFO', `${ticker}: Placing BUY ${qty} ${sym} @ ~$${price.toFixed(4)} ($${notional.toFixed(2)}) [${mode.toUpperCase()}]`);
+    log('INFO', `${ticker}: Placing BUY ${qty} ${sym} @ ~$${price.toFixed(4)} | Target: $${size} | Actual: $${notional.toFixed(2)} [${mode.toUpperCase()}]`);
     const order = await bybitPost('/order', {
       category: mode, symbol: sym, side: 'Buy', qty: String(qty),
       leverage: mode === 'linear' ? leverage : undefined,

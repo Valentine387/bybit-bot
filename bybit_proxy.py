@@ -937,6 +937,17 @@ _auto_creds = {
 _open_positions = {}  # symbol -> position data
 _last_regime = 'UNKNOWN'
 
+# Trade management state — tracks peak profit for trailing
+_trade_state = {}
+# {symbol: {
+#   'entry': float,       entry price
+#   'side': str,          'Buy' or 'Sell'
+#   'size': float,        trade size in USD
+#   'peak_pnl': float,    highest P&L seen
+#   'peak_price': float,  best price seen
+#   'be_done': bool,      breakeven already set
+# }}
+
 def _bybit_request(method, path, params=None, body=None, api_key=None, api_secret=None):
     """Make authenticated Bybit API request from server side"""
     key = api_key or _auto_creds['api_key']
@@ -1151,6 +1162,12 @@ def _get_positions():
             for p in r.get('result',{}).get('list',[]):
                 if float(p.get('size',0))>0:
                     positions[p['symbol']]=p
+            # Clean up trade state for closed positions
+            closed = set(_open_positions.keys()) - set(positions.keys())
+            for sym in closed:
+                if sym in _trade_state:
+                    del _trade_state[sym]
+                    print(f'  [TradeMgmt] 🗑️ Cleaned state for closed position: {sym}')
             _open_positions=positions
             return positions
     except: pass
@@ -1181,7 +1198,17 @@ def _place_order(symbol, side, size, price, category=None):
         if mode=='linear': body['leverage']='1'
         r=_bybit_request('POST','/v5/order/create',body=body)
         if r and r.get('retCode')==0:
-            print(f'  [AutoTrader] ✅ {side} {symbol}: {qty} units @ ~${price:.4f} (${qty*price:.2f})')
+            actual_notional = qty * price
+            print(f'  [AutoTrader] ✅ {side} {symbol}: {qty} units @ ~${price:.4f} | Notional: ${actual_notional:.2f}')
+            # Record in trade state for management
+            _trade_state[symbol] = {
+                'entry':      price,
+                'side':       side,
+                'size':       qty,
+                'peak_pnl':   0.0,
+                'peak_price': price,
+                'be_done':    False,
+            }
             return True
         else:
             print(f'  [AutoTrader] ❌ Order failed {symbol}: {r}')
@@ -1189,6 +1216,172 @@ def _place_order(symbol, side, size, price, category=None):
     except Exception as e:
         print(f'  [AutoTrader] Order error {symbol}: {e}')
         return False
+
+
+def _set_sl(symbol, new_sl, category='linear'):
+    """Set stop loss on an open position via Bybit API"""
+    try:
+        r = _bybit_request('POST', '/v5/position/trading-stop', body={
+            'category': category,
+            'symbol':   symbol,
+            'stopLoss': str(round(new_sl, 8)),
+            'slTriggerBy': 'MarkPrice',
+            'tpslMode': 'Full',
+            'positionIdx': 0,
+        })
+        if r and r.get('retCode') == 0:
+            return True
+        else:
+            print(f'  [TradeMgmt] SL set failed {symbol}: {r}')
+            return False
+    except Exception as e:
+        print(f'  [TradeMgmt] SL error {symbol}: {e}')
+        return False
+
+def _close_position_market(symbol, side, qty, category='linear'):
+    """Close position at market price"""
+    try:
+        close_side = 'Sell' if side == 'Buy' else 'Buy'
+        r = _bybit_request('POST', '/v5/order/create', body={
+            'category':    category,
+            'symbol':      symbol,
+            'side':        close_side,
+            'orderType':   'Market',
+            'qty':         str(qty),
+            'reduceOnly':  True,
+            'timeInForce': 'IOC',
+        })
+        if r and r.get('retCode') == 0:
+            print(f'  [TradeMgmt] ✅ Closed {symbol} at market')
+            return True
+        else:
+            print(f'  [TradeMgmt] Close failed {symbol}: {r}')
+            return False
+    except Exception as e:
+        print(f'  [TradeMgmt] Close error {symbol}: {e}')
+        return False
+
+def _manage_open_positions():
+    """
+    Trade management — runs every 60 seconds
+    For each open position:
+      1. Breakeven: move SL to entry after +1% profit
+      2. Trailing SL: trail SL at 1.5x ATR behind price
+      3. Trailing TP: close if profit drops $1 or 2% from peak
+    """
+    global _trade_state
+
+    try:
+        positions = _get_positions()
+    except Exception as e:
+        print(f'  [TradeMgmt] Could not fetch positions: {e}')
+        return
+
+    if not positions:
+        return
+
+    for symbol, pos in positions.items():
+        try:
+            side      = pos.get('side', 'Buy')
+            entry     = float(pos.get('avgPrice', 0) or pos.get('entryPrice', 0))
+            size      = float(pos.get('size', 0))
+            cur_sl    = float(pos.get('stopLoss', 0) or 0)
+            unreal_pnl= float(pos.get('unrealisedPnl', 0))
+            mark_price= float(pos.get('markPrice', 0) or entry)
+            category  = _auto_creds.get('trading_mode', 'linear')
+
+            if entry <= 0 or size <= 0:
+                continue
+
+            # Init trade state for this symbol
+            if symbol not in _trade_state:
+                _trade_state[symbol] = {
+                    'entry':       entry,
+                    'side':        side,
+                    'size':        size,
+                    'peak_pnl':    unreal_pnl,
+                    'peak_price':  mark_price,
+                    'be_done':     False,
+                }
+
+            state = _trade_state[symbol]
+
+            # Update peak values
+            if unreal_pnl > state['peak_pnl']:
+                state['peak_pnl']   = unreal_pnl
+                state['peak_price'] = mark_price
+
+            is_buy = side == 'Buy'
+
+            # ── 1. BREAKEVEN ─────────────────────────────────
+            # Move SL to entry when price moves +1% in our favour
+            if not state['be_done']:
+                pnl_pct = (mark_price - entry) / entry * 100 if is_buy                           else (entry - mark_price) / entry * 100
+                if pnl_pct >= 1.0:
+                    be_price = entry
+                    # Only move SL if it's currently worse than entry
+                    if is_buy and (cur_sl < be_price or cur_sl == 0):
+                        if _set_sl(symbol, be_price, category):
+                            state['be_done'] = True
+                            print(f'  [TradeMgmt] 🔒 BREAKEVEN {symbol} SL moved to entry ${be_price:.6f} (was ${cur_sl:.6f})')
+                    elif not is_buy and (cur_sl > be_price or cur_sl == 0):
+                        if _set_sl(symbol, be_price, category):
+                            state['be_done'] = True
+                            print(f'  [TradeMgmt] 🔒 BREAKEVEN {symbol} SL moved to entry ${be_price:.6f} (was ${cur_sl:.6f})')
+
+            # ── 2. TRAILING SL ───────────────────────────────
+            # Trail SL 1.5% behind current price as it moves in profit
+            # Only trail if already in profit
+            if unreal_pnl > 0:
+                trail_distance = mark_price * 0.015  # 1.5% trail
+                if is_buy:
+                    new_trail_sl = mark_price - trail_distance
+                    # Only move SL up, never down
+                    if new_trail_sl > (cur_sl or 0):
+                        if _set_sl(symbol, new_trail_sl, category):
+                            print(f'  [TradeMgmt] 📈 TRAIL SL {symbol} → ${new_trail_sl:.6f} (price=${mark_price:.6f})')
+                            cur_sl = new_trail_sl
+                else:
+                    new_trail_sl = mark_price + trail_distance
+                    # Only move SL down, never up
+                    if cur_sl == 0 or new_trail_sl < cur_sl:
+                        if _set_sl(symbol, new_trail_sl, category):
+                            print(f'  [TradeMgmt] 📉 TRAIL SL {symbol} → ${new_trail_sl:.6f} (price=${mark_price:.6f})')
+                            cur_sl = new_trail_sl
+
+            # ── 3. TRAILING TP ───────────────────────────────
+            # Close position if profit drops $1 OR 2% from peak
+            # Only applies after we've made at least $1 profit
+            peak = state['peak_pnl']
+            if peak >= 1.0:
+                drop_dollar = peak - unreal_pnl
+                drop_pct    = drop_dollar / peak * 100 if peak > 0 else 0
+
+                trigger = drop_dollar >= 1.0 or drop_pct >= 2.0
+
+                if trigger:
+                    print(f'  [TradeMgmt] 🎯 TRAIL TP {symbol} | Peak=${peak:.2f} Now=${unreal_pnl:.2f} Drop=${drop_dollar:.2f} ({drop_pct:.1f}%) — closing')
+                    if _close_position_market(symbol, side, str(size), category):
+                        if symbol in _trade_state:
+                            del _trade_state[symbol]
+                        if symbol in _open_positions:
+                            del _open_positions[symbol]
+
+        except Exception as e:
+            print(f'  [TradeMgmt] Error managing {symbol}: {e}')
+
+def _trade_management_loop():
+    """Separate thread — monitors positions every 60 seconds"""
+    time.sleep(45)  # Stagger after main loop starts
+    print('  [TradeMgmt] 🛡️ Trade management loop started (60s interval)')
+    print('  [TradeMgmt] Features: Breakeven +1% | Trail SL 1.5% | Trail TP $1 or 2% from peak')
+    while True:
+        try:
+            if _auto_creds.get('api_key') and _auto_creds.get('api_secret'):
+                _manage_open_positions()
+        except Exception as e:
+            print(f'  [TradeMgmt] Loop error: {e}')
+        time.sleep(60)  # Check every 60 seconds
 
 def _auto_trading_loop():
     """Main autonomous trading loop — runs every 5 minutes on Render"""
@@ -1278,9 +1471,13 @@ def _auto_trading_loop():
 
         time.sleep(scan_interval)
 
-# Start autonomous engine in background thread
+# Start autonomous trading engine
 _auto_thread = threading.Thread(target=_auto_trading_loop, daemon=True)
 _auto_thread.start()
+
+# Start trade management engine (breakeven, trailing SL/TP)
+_mgmt_thread = threading.Thread(target=_trade_management_loop, daemon=True)
+_mgmt_thread.start()
 
 server = HTTPServer(("0.0.0.0", PORT), BybitProxyHandler)
 try:
