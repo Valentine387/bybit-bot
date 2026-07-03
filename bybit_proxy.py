@@ -1786,7 +1786,7 @@ def _auto_trading_loop():
 
             # Get current positions
             positions=_get_positions()
-            if len(positions)>=20:
+            if len(positions)>=100:
                 print(f'  [AutoTrader] Max 20 server positions reached ({len(positions)} open) — skipping scan')
                 time.sleep(scan_interval)
                 continue
@@ -1827,8 +1827,8 @@ def _auto_trading_loop():
 
             # Place trades for top signals
             trades_this_cycle=0
-            for sig in strong[:5]:  # max 5 trades per scan
-                if len(positions)+trades_this_cycle>=20: break
+            for sig in strong[:50]:  # max 5 trades per scan
+                if len(positions)+trades_this_cycle>=100: break
                 sym=sig['symbol']
                 side='Buy' if sig['direction']==1 else 'Sell'
                 size=_auto_creds['trade_size']
