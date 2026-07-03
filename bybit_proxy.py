@@ -932,7 +932,7 @@ _auto_creds = {
     'tp_pct': float(os.environ.get('TP_PCT', '15')),
     'sl_pct': float(os.environ.get('SL_PCT', '3')),
     'auto_enabled': os.environ.get('AUTO_TRADING', 'false').lower() == 'true',
-    'min_confidence': float(os.environ.get('MIN_CONFIDENCE', '75')),
+    'min_confidence': float(os.environ.get('MIN_CONFIDENCE', '60')),
 }
 _open_positions = {}  # symbol -> position data
 _last_regime = 'UNKNOWN'
@@ -1058,120 +1058,488 @@ def _check_regime():
     except Exception as e:
         return _last_regime
 
-def _scan_symbol(symbol, category=None):
-    """Run AlgoRhythm 4-condition check on a symbol server-side"""
-    try:
-        # Skip stablecoins — they never move so never generate breakout signals
-        STABLECOINS = {'USDC','USDT','USDE','USD1','USDTEUR','USDTBRL','USDCEUR','USDCUSDT','USDEUSDT','USD1USDT'}
-        if symbol in STABLECOINS: return None
-        if symbol.startswith('USDC') or symbol.startswith('USDT') or symbol.startswith('USDE'): return None
-        # Determine category: non-USDT pairs use spot, USDT pairs use configured mode
-        cat = category or (_auto_creds['trading_mode'] if symbol.endswith('USDT') else 'spot')
-        c30m = _get_klines(symbol,'30',100, category=cat)
-        c4h  = _get_klines(symbol,'240',60, category=cat)
-        if not c30m or len(c30m)<30: return None
-        closes=[c['close'] for c in c30m]
-        n=len(closes)
-        cur=closes[-1]
-        rh=max(c['high'] for c in c30m[-22:-2])
-        rl=min(c['low']  for c in c30m[-22:-2])
-        up_break=cur>rh; dn_break=cur<rl
-        if not up_break and not dn_break: return None
-        direction=1 if up_break else -1
-        adx=_calc_adx(c30m,14)
-        if not adx or adx<20: return None
-        ma20=_calc_ma(closes,20)
-        if not ma20: return None
-        if direction==1 and cur<ma20: return None
-        if direction==-1 and cur>ma20: return None
-        # MA votes
-        sma50=_calc_ma(closes,50); ema_c=closes[-1]
-        ma_v=0
-        if direction==1:
-            if cur>ma20: ma_v+=1
-            if ma20 and sma50 and ma20>sma50: ma_v+=1
-            if ma_v>=1: ma_v+=1  # simplified EMA proxy
+
+# ═══════════════════════════════════════════════════════════════
+# FULL ANALYSIS ENGINE — exact translation of browser bot
+# ═══════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════
+# SERVER ANALYSIS ENGINE — exact Python translation of browser bot
+# getSignal() produces identical results to the browser's analysis
+# ═══════════════════════════════════════════════════════════════════
+import math
+
+# ── MATH HELPERS ──────────────────────────────────────────────────
+def _sma(arr, n):
+    if len(arr) < n: return None
+    return sum(arr[-n:]) / n
+
+def _ema(closes, period):
+    if len(closes) < period: return None
+    k = 2 / (period + 1)
+    e = sum(closes[:period]) / period
+    for v in closes[period:]:
+        e = v * k + e * (1 - k)
+    return e
+
+def _wma(closes, period):
+    if len(closes) < period: return None
+    s = closes[-period:]
+    total = sum(v * (i+1) for i,v in enumerate(s))
+    w = sum(i+1 for i in range(period))
+    return total / w
+
+def _rsi(closes, period=14):
+    if len(closes) < period+1: return 50
+    gains = losses = 0
+    for i in range(len(closes)-period, len(closes)):
+        d = closes[i] - closes[i-1]
+        if d > 0: gains += d
+        else: losses -= d
+    ag, al = gains/period, losses/period
+    return 100 if al == 0 else 100 - 100/(1+ag/al)
+
+def _adx(candles, period=14):
+    if len(candles) < period*2: return None
+    tr, pdm, mdm = [], [], []
+    for i in range(1, len(candles)):
+        c, p = candles[i], candles[i-1]
+        tr.append(max(c['h']-c['l'], abs(c['h']-p['c']), abs(c['l']-p['c'])))
+        up = c['h'] - p['h']; dn = p['l'] - c['l']
+        pdm.append(up if up > dn and up > 0 else 0)
+        mdm.append(dn if dn > up and dn > 0 else 0)
+    def wilder(arr, p):
+        s = sum(arr[:p]); out = [s]
+        for v in arr[p:]: s = s - s/p + v; out.append(s)
+        return out
+    trs, ps, ms = wilder(tr,period), wilder(pdm,period), wilder(mdm,period)
+    dx = []
+    for i in range(len(trs)):
+        pi = (ps[i]/trs[i]*100) if trs[i] else 0
+        mi = (ms[i]/trs[i]*100) if trs[i] else 0
+        dx.append(abs(pi-mi)/((pi+mi) or 1)*100)
+    return wilder(dx, period)[-1] if len(dx) >= period else None
+
+def _macd(closes):
+    if len(closes) < 26: return None
+    ema12 = _ema(closes, 12)
+    ema26 = _ema(closes, 26)
+    if ema12 is None or ema26 is None: return None
+    line = ema12 - ema26
+    return {'line': line, 'bullish': line > 0}
+
+def _obv(candles, lookback=20):
+    if len(candles) < 2: return 0
+    obv = 0
+    for i in range(1, len(candles)):
+        if candles[i]['c'] > candles[i-1]['c']:   obv += candles[i].get('v',0)
+        elif candles[i]['c'] < candles[i-1]['c']:  obv -= candles[i].get('v',0)
+    return obv
+
+def _lin_reg_slope(closes, period):
+    if len(closes) < period: return 0
+    s = closes[-period:]; n = period
+    sX = sY = sXY = sX2 = 0
+    for i, y in enumerate(s):
+        x = i+1; sX+=x; sY+=y; sXY+=x*y; sX2+=x*x
+    d = n*sX2 - sX*sX
+    return 0 if d == 0 else (n*sXY - sX*sY)/d
+
+def _pearson(closes, period):
+    if len(closes) < period: return 0
+    s = closes[-period:]; n = period
+    sX=sY=sXY=sX2=sY2 = 0
+    for i, y in enumerate(s):
+        x=i+1; sX+=x; sY+=y; sXY+=x*y; sX2+=x*x; sY2+=y*y
+    num = n*sXY - sX*sY
+    den = math.sqrt((n*sX2-sX*sX)*(n*sY2-sY*sY))
+    return 0 if den == 0 else num/den
+
+def _support_resistance(candles):
+    if not candles or len(candles) < 10:
+        return {'support':[], 'resistance':[]}
+    n = len(candles)
+    support, resistance = [], []
+    for i in range(2, n-2):
+        lo = candles[i]['l']
+        if lo < candles[i-1]['l'] and lo < candles[i-2]['l'] and lo < candles[i+1]['l'] and lo < candles[i+2]['l']:
+            support.append(lo)
+        hi = candles[i]['h']
+        if hi > candles[i-1]['h'] and hi > candles[i-2]['h'] and hi > candles[i+1]['h'] and hi > candles[i+2]['h']:
+            resistance.append(hi)
+    return {'support': sorted(set(round(s,8) for s in support)),
+            'resistance': sorted(set(round(r,8) for r in resistance))}
+
+def _detect_trend(candles):
+    if not candles or len(candles) < 10: return 'UNKNOWN'
+    closes = [c['c'] for c in candles]
+    ma20 = _sma(closes, 20)
+    ma50 = _sma(closes, min(50, len(closes)))
+    cur  = closes[-1]
+    if not ma20: return 'UNKNOWN'
+    slope = _lin_reg_slope(closes, min(20, len(closes)))
+    if slope > 0 and cur > ma20 and (ma50 is None or ma20 > ma50): return 'UPTREND'
+    if slope < 0 and cur < ma20 and (ma50 is None or ma20 < ma50): return 'DOWNTREND'
+    return 'SIDEWAYS'
+
+def _detect_all_patterns(candles):
+    NONE = {'name':'None','direction':0,'strength':1}
+    if not candles or len(candles) < 5: return NONE
+    n = len(candles)
+    c1,c2,c3,c4 = candles[n-1],candles[n-2],candles[n-3],candles[n-4] if n>=4 else candles[0]
+
+    def body(c): return abs(c['c']-c['o'])
+    def rng(c):  return max(c['h']-c['l'], 0.000001)
+    def hiW(c):  return c['h'] - max(c['o'],c['c'])
+    def loW(c):  return min(c['o'],c['c']) - c['l']
+    def bull(c): return c['c'] > c['o']
+    def bear(c): return c['c'] < c['o']
+    def bRat(c): return body(c)/rng(c)
+
+    WR=2.0; BMIN=0.60; DOJI=0.10
+
+    # Bullish
+    if loW(c1)>=body(c1)*WR and hiW(c1)<body(c1)*0.5 and bRat(c1)<0.4 and not bull(c2):
+        return {'name':'Hammer','direction':1,'strength':2}
+    if hiW(c1)>=body(c1)*WR and loW(c1)<body(c1)*0.5 and bRat(c1)<0.4 and bear(c2):
+        return {'name':'Inverted Hammer','direction':1,'strength':1}
+    if bull(c1) and bear(c2) and c1['o']<c2['c'] and c1['c']>c2['o'] and body(c1)>body(c2):
+        return {'name':'Bullish Engulfing','direction':1,'strength':3}
+    if bull(c1) and bear(c2) and c1['o']<c2['l'] and c1['c']>c2['o']+body(c2)*0.5 and c1['c']<c2['o']:
+        return {'name':'Piercing Line','direction':1,'strength':2}
+    if bear(c3) and body(c2)<body(c3)*0.5 and bull(c1) and c1['c']>c3['o']+body(c3)*0.5:
+        return {'name':'Morning Star','direction':1,'strength':3}
+    if bull(c1) and bull(c2) and bull(c3) and c1['c']>c2['c'] and c2['c']>c3['c'] and bRat(c1)>=BMIN and bRat(c2)>=BMIN:
+        return {'name':'Three White Soldiers','direction':1,'strength':3}
+    if n>=4 and bull(c1) and bear(c3) and c1['c']>c4['c'] and c1['o']<c3['c'] and c2['h']<c4['c']:
+        return {'name':'Rising Three Methods','direction':1,'strength':2}
+    # Bearish
+    if loW(c1)>=body(c1)*WR and hiW(c1)<body(c1)*0.5 and bRat(c1)<0.4 and bull(c2):
+        return {'name':'Hanging Man','direction':-1,'strength':2}
+    if hiW(c1)>=body(c1)*WR and loW(c1)<body(c1)*0.5 and bRat(c1)<0.4 and bull(c2):
+        return {'name':'Shooting Star','direction':-1,'strength':2}
+    if bear(c1) and bull(c2) and c1['o']>c2['c'] and c1['c']<c2['o'] and body(c1)>body(c2):
+        return {'name':'Bearish Engulfing','direction':-1,'strength':3}
+    if bear(c1) and bull(c2) and c1['o']>c2['h'] and c1['c']<c2['o']+body(c2)*0.5 and c1['c']>c2['o']:
+        return {'name':'Dark Cloud Cover','direction':-1,'strength':2}
+    if bull(c3) and body(c2)<body(c3)*0.5 and bear(c1) and c1['c']<c3['o']+body(c3)*0.5:
+        return {'name':'Evening Star','direction':-1,'strength':3}
+    if bear(c1) and bear(c2) and bear(c3) and c1['c']<c2['c'] and c2['c']<c3['c'] and bRat(c1)>=BMIN and bRat(c2)>=BMIN:
+        return {'name':'Three Black Crows','direction':-1,'strength':3}
+    if n>=4 and bear(c1) and bull(c3) and c1['c']<c4['c'] and c1['o']>c3['c'] and c2['l']>c4['c']:
+        return {'name':'Falling Three Methods','direction':-1,'strength':2}
+    # Neutral
+    if bRat(c1)<=DOJI and loW(c1)>=rng(c1)*0.6 and hiW(c1)<rng(c1)*0.1:
+        return {'name':'Dragonfly Doji','direction':1,'strength':2}
+    if bRat(c1)<=DOJI and hiW(c1)>=rng(c1)*0.6 and loW(c1)<rng(c1)*0.1:
+        return {'name':'Gravestone Doji','direction':-1,'strength':2}
+    if bRat(c1)<=DOJI:
+        return {'name':'Doji','direction':0,'strength':1}
+    if bRat(c1)<0.3 and loW(c1)>body(c1)*0.5 and hiW(c1)>body(c1)*0.5:
+        return {'name':'Spinning Top','direction':0,'strength':1}
+    return NONE
+
+
+def server_get_signal(symbol, c30m, c4h, c5m=None, c1h=None):
+    """
+    Exact Python translation of browser's getSignal() function.
+    Inputs: candle dicts with keys o,h,l,c,v
+    Returns: dict with signal, confidence, direction, reason, patternName
+    """
+    HOLD = lambda r: {'signal':'HOLD','confidence':50,'direction':0,'reason':r,'patternName':'None'}
+
+    candles = c30m
+    if not candles or len(candles) < 30:
+        return HOLD('Insufficient 30m candle history')
+
+    closes  = [c['c'] for c in candles]
+    volumes = [c.get('v',0) for c in candles]
+    n       = len(closes)
+    cur     = closes[-1]
+    reasons = []
+    score   = 0
+
+    # ── LAYER 1: HARD GATES ───────────────────────────────────────
+    # Gate A: Breakout
+    slice22 = candles[-22:-2]
+    range_high = max(c['h'] for c in slice22)
+    range_low  = min(c['l'] for c in slice22)
+    up_break   = closes[-1] > range_high
+    dn_break   = closes[-1] < range_low
+    if not up_break and not dn_break:
+        return HOLD('Price inside 20-bar range — no breakout detected')
+    direction = 1 if up_break else -1
+
+    # Gate B: S&R proximity
+    sr = _support_resistance(c1h if c1h and len(c1h)>=10 else candles)
+    near_sr = (sr['support'][-1] if sr['support'] else None) if direction==1 \
+              else (sr['resistance'][0] if sr['resistance'] else None)
+    if not near_sr:
+        return HOLD(f'No {"support" if direction==1 else "resistance"} level near price')
+    sr_dist = abs(cur - near_sr) / cur * 100
+    if sr_dist > 8:
+        return HOLD(f'Price {sr_dist:.1f}% from nearest S&R (need <8%)')
+    score += 15
+    reasons.append(f'S&R Gate (+15): Level {near_sr:.6f} is {sr_dist:.1f}% away')
+
+    # Gate C: ADX >= 22
+    adx = _adx(candles, 14)
+    if not adx or adx < 22:
+        return HOLD(f'ADX {adx:.1f if adx else "N/A"} below 22 — market ranging')
+
+    # Gate D: MA20 alignment
+    ma20 = _sma(closes, 20)
+    ma_ok = (cur > ma20) if direction==1 else (cur < ma20)
+    if not ma_ok:
+        return HOLD(f'{"Bullish" if direction==1 else "Bearish"} breakout but price {"below" if direction==1 else "above"} MA20')
+
+    # Gate E: H4 alignment
+    if c4h and len(c4h) >= 20:
+        cl4   = [c['c'] for c in c4h]
+        h4ma  = _sma(cl4, 50)
+        h4last= cl4[-1]
+        if h4ma:
+            if direction==1 and h4last < h4ma:
+                return HOLD('30m bullish breakout but 4H trend conflicts')
+            if direction==-1 and h4last > h4ma:
+                return HOLD('30m bearish breakout but 4H trend conflicts')
+
+    score += 12
+    reasons.append(f'Trend Gate (+12): ADX {adx:.1f} | Price {"above" if direction==1 else "below"} MA20 | H4 aligned')
+    score += 25
+    reasons.append(f'Breakout (+25): Closed {"ABOVE" if up_break else "BELOW"} 20-bar range')
+
+    # Multi-TF bias
+    trends = []
+    for tf_candles in [c5m, c30m, c1h, c4h]:
+        if tf_candles and len(tf_candles) >= 10:
+            trends.append(_detect_trend(tf_candles))
+    up_count   = trends.count('UPTREND')
+    down_count = trends.count('DOWNTREND')
+    ts = 'STRONG_UP' if up_count>=3 else 'WEAK_UP' if up_count==2 else \
+         'STRONG_DOWN' if down_count>=3 else 'WEAK_DOWN' if down_count==2 else 'MIXED'
+
+    bias_up   = ts in ('STRONG_UP','WEAK_UP')
+    bias_down = ts in ('STRONG_DOWN','WEAK_DOWN')
+    if direction==1 and bias_down:
+        return HOLD(f'Multi-TF bias is BEARISH ({ts}) — blocks bullish entry')
+    if direction==-1 and bias_up:
+        return HOLD(f'Multi-TF bias is BULLISH ({ts}) — blocks bearish entry')
+    if (direction==1 and bias_up) or (direction==-1 and bias_down):
+        score += 12
+        reasons.append(f'Multi-TF Bias (+12): {ts} confirms direction')
+
+    # ── LAYER 2: TECHNICAL SCORING ────────────────────────────────
+    # MAs (5 votes × 3pts)
+    sma20p = _sma(closes[:-1], 20)
+    sma50  = _sma(closes, 50)
+    ema8   = _ema(closes, 8)
+    ema21  = _ema(closes, 21)
+    wma21  = _wma(closes, 21)
+    ma_v   = 0
+    if direction==1:
+        if ma20 and cur > ma20:  ma_v+=1
+        if ma20 and sma50 and ma20>sma50: ma_v+=1
+        if ema8 and ema21 and ema8>ema21: ma_v+=1
+        if wma21 and cur>wma21: ma_v+=1
+        if ma20 and sma20p and ma20>sma20p: ma_v+=1
+    else:
+        if ma20 and cur<ma20:   ma_v+=1
+        if ma20 and sma50 and ma20<sma50: ma_v+=1
+        if ema8 and ema21 and ema8<ema21: ma_v+=1
+        if wma21 and cur<wma21: ma_v+=1
+        if ma20 and sma20p and ma20<sma20p: ma_v+=1
+    score += ma_v * 3
+    reasons.append(f'MA Score (+{ma_v*3}): {ma_v}/5 MAs aligned')
+
+    # Linear Regression slope
+    slope     = _lin_reg_slope(closes, 20)
+    slope_up  = slope > 0
+    slope_pct = abs(slope) / (cur or 1) * 100
+    if (direction==1 and slope_up) or (direction==-1 and not slope_up):
+        pts = 15 if slope_pct>0.1 else 10 if slope_pct>0.03 else 5
+        score += pts
+        reasons.append(f'LinReg (+{pts}): Slope {"UP" if slope_up else "DOWN"} {slope_pct:.3f}%/bar')
+    else:
+        score -= 8
+        reasons.append('LinReg (-8): Slope opposes direction')
+
+    # Pearson Correlation
+    corr = _pearson(closes, 20)
+    ca   = abs(corr)
+    corr_dir = 1 if corr > 0 else -1
+    if corr_dir == direction:
+        pts = 12 if ca>=0.8 else 8 if ca>=0.6 else 4 if ca>=0.4 else 0
+        score += pts
+        if pts: reasons.append(f'Correlation (+{pts}): r={corr:.2f}')
+    elif ca < 0.3:
+        score -= 8
+        reasons.append(f'Correlation (-8): r={corr:.2f} choppy')
+    else:
+        score -= 5
+
+    # RSI
+    rsi_val = _rsi(closes, 14)
+    if direction==1 and rsi_val < 70:
+        p = 15 if rsi_val<60 else 8
+        score += p
+        reasons.append(f'RSI (+{p}): {rsi_val:.0f} room to run')
+    elif direction==-1 and rsi_val > 30:
+        p = 15 if rsi_val>40 else 8
+        score += p
+        reasons.append(f'RSI (+{p}): {rsi_val:.0f} room to fall')
+    else:
+        score -= 15
+        reasons.append(f'RSI (-15): {rsi_val:.0f} overbought/oversold vs direction')
+
+    # ADX strength bonus
+    ap = 8 if adx>=30 else 4 if adx>=22 else 0
+    if ap:
+        score += ap
+        reasons.append(f'ADX (+{ap}): {adx:.0f} strength')
+
+    # MACD
+    macd_d = _macd(closes)
+    if macd_d:
+        if (direction==1 and macd_d['bullish']) or (direction==-1 and not macd_d['bullish']):
+            score += 10; reasons.append('MACD (+10): Momentum confirmed')
         else:
-            if cur<ma20: ma_v+=1
-            if ma20 and sma50 and ma20<sma50: ma_v+=1
-            if ma_v>=1: ma_v+=1
-        if ma_v<3: return None
-        rsi=_calc_rsi(closes,14)
-        if rsi is None: return None
-        if direction==1 and not (35<=rsi<=75): return None
-        if direction==-1 and not (25<=rsi<=65): return None
-        # H4 check (soft)
-        h4_ok=True
-        if c4h and len(c4h)>=20:
-            h4cl=[c['close'] for c in c4h]
-            h4ma=_calc_ma(h4cl,50)
-            if h4ma:
-                h4_ok=(direction==1 and h4cl[-1]>h4ma) or (direction==-1 and h4cl[-1]<h4ma)
-        # Score
-        score=40
-        if up_break or dn_break: score+=15
-        if adx>=25: score+=12
-        elif adx>=20: score+=8
-        if ma_v>=3: score+=10
-        if h4_ok: score+=8
-        rsi_ok=(direction==1 and rsi<60) or (direction==-1 and rsi>40)
-        if rsi_ok: score+=10
-        score=min(100,score)
-        return {'symbol':symbol,'direction':direction,'score':score,'adx':adx,'rsi':rsi,'price':cur,'category':cat}
-    except Exception as e:
+            score -= 12; reasons.append('MACD (-12): Momentum opposes')
+
+    # OBV
+    obv_val = _obv(candles, 20)
+    if (direction==1 and obv_val>0) or (direction==-1 and obv_val<0):
+        score += 8; reasons.append('OBV (+8): Volume pressure confirms')
+    elif obv_val != 0:
+        score -= 8; reasons.append('OBV (-8): Volume pressure opposes')
+
+    # EMA cross
+    if ema8 and ema21:
+        if (direction==1 and ema8>ema21) or (direction==-1 and ema8<ema21): score += 6
+        else: score -= 6
+
+    # S&R support/block
+    sr_help  = (sr['support'][-1]   if sr['support']   else None) if direction==1 else (sr['resistance'][0] if sr['resistance'] else None)
+    sr_block = (sr['resistance'][0] if sr['resistance'] else None) if direction==1 else (sr['support'][-1]   if sr['support']   else None)
+    if sr_help:
+        d = abs(cur-sr_help)/cur*100
+        if d<=3: score+=10; reasons.append(f'S&R Support (+10): {sr_help:.6f} {d:.1f}% away')
+    if sr_block:
+        d = abs(cur-sr_block)/cur*100
+        if d<=6: score-=15; reasons.append(f'S&R Block (-15): {sr_block:.6f} only {d:.1f}% ahead')
+
+    # Volume spike
+    cv = volumes[-1]; av = sum(volumes[-21:-1])/20 if len(volumes)>=21 else 0
+    if av > 0 and cv/av >= 1.5:
+        score += 8; reasons.append(f'Volume (+8): {cv/av:.1f}× average')
+
+    score = max(0, min(100, score))
+
+    # ── LAYER 3: CANDLESTICK PATTERNS ─────────────────────────────
+    pat = _detect_all_patterns(candles)
+    if pat['name'] != 'None':
+        if pat['direction'] != 0:
+            if pat['direction'] == direction:
+                b = round(20 * pat['strength'] / 2)
+                score += b
+                reasons.append(f'Pattern (+{b}): {pat["name"]} CONFIRMS {"BUY" if direction==1 else "SELL"}')
+            else:
+                p = round(10 * pat['strength'] / 2)
+                score -= p
+                reasons.append(f'Pattern (-{p}): {pat["name"]} opposes direction')
+        else:
+            score -= 8
+            reasons.append(f'Pattern (-8): {pat["name"]} — indecision')
+
+    score = max(0, min(100, score))
+
+    # ── CONFLICT VETO ──────────────────────────────────────────────
+    conflicts = 0
+    if macd_d and ((1 if macd_d['bullish'] else -1) != direction): conflicts+=1
+    if obv_val != 0 and ((1 if obv_val>0 else -1) != direction): conflicts+=1
+    if ema8 and ema21 and ((1 if ema8>ema21 else -1) != direction): conflicts+=1
+    if bias_up   and direction==-1: conflicts+=1
+    if bias_down and direction==1:  conflicts+=1
+    if conflicts >= 3:
+        return HOLD(f'{conflicts} opposing signals — conflict veto')
+    if conflicts == 2:
+        score = round(score * 0.8)
+        reasons.append(f'Conflict penalty: {conflicts} opposing signals — score reduced')
+
+    score = max(0, min(100, score))
+
+    final_signal = ('BUY' if direction==1 else 'SELL') if score >= 60 else 'HOLD'
+    top_reasons  = ' | '.join(reasons[:3])
+
+    return {
+        'signal':      final_signal,
+        'confidence':  score,
+        'direction':   direction,
+        'reason':      f'Score {score}/100 | {pat["name"]+" | " if pat["name"]!="None" else ""}{top_reasons}',
+        'patternName': pat['name'],
+        'reasons':     reasons,
+        'adx':         adx,
+        'rsi':         round(rsi_val, 1),
+    }
+
+
+def _scan_symbol(symbol, category=None):
+    """
+    Uses the SAME analysis engine as the browser bot (getSignal equivalent).
+    Returns signal dict with confidence, direction, reason etc.
+    """
+    # Skip stablecoins
+    STABLECOINS = {
+        'USDCUSDT','USDEUSDT','USD1USDT','USDTUSDC','BUSD','TUSD','DAI',
+        'USDC','USDT','USDE','USD1','USDTEUR','USDTBRL','USDCEUR',
+    }
+    if symbol in STABLECOINS: return None
+    if symbol.startswith('USDC') or symbol.startswith('USDE') or symbol.startswith('USD1'):
         return None
 
-# Clean coin list — stablecoins and unknown tokens removed
-# Only real crypto with enough volatility to generate signals
-SCAN_SYMBOLS = [
-    # Major coins
-    'BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'XRPUSDT', 'DOGEUSDT', 'BNBUSDT',
-    'ADAUSDT', 'AVAXUSDT', 'LINKUSDT', 'DOTUSDT', 'LTCUSDT', 'NEARUSDT',
-    # Mid caps
-    'TONUSDT', 'HYPEUSDT', 'HOLOUSDT', 'ASTERUSDT', 'ONDOUSDT', 'ENAUSDT',
-    'SUIUSDT', 'INJUSDT', 'TIAUSDT', 'FETUSDT', 'RENDERUSDT', 'WLDUSDT',
-    'VIRTUALUSDT', 'XAUTUSDT', 'BILLUSDT', 'MNTUSDT', 'SAHARAUSDT',
-    # DeFi
-    'AAVEUSDT', 'UNIUSDT', 'CRVUSDT', 'MKRUSDT', 'LDOUSDT', 'SNXUSDT',
-    'COMPUSDT', 'GMXUSDT', 'DYDXUSDT', 'ARBUSDT', 'OPUSDT', 'APTUSDT',
-    # Meme coins
-    'PEPEUSDT', 'SHIBUSDT', 'WIFUSDT', 'BONKUSDT', 'FLOKIUSDT',
-    'POPCATUSDT', 'MEWUSDT', 'BRETTUSDT', 'VVVUSDT',
-    # Layer 1
-    'XLMUSDT', 'TRXUSDT', 'ATOMUSDT', 'FILUSDT', 'ALGOUSDT', 'VETUSDT',
-    'HBARUSDT', 'XMRUSDT', 'EOSUSDT', 'BCHUSDT', 'ETCUSDT', 'ZECUSDT',
-    # Other
-    'KASUSDT', 'CFXUSDT', 'STXUSDT', 'SEIUSDT', 'FTMUSDT', 'SANDUSDT',
-    'MANAUSDT', 'AXSUSDT', 'PENDLEUSDT', 'IMXUSDT', 'THETAUSDT', 'GALAUSDT',
-    'HBARUSDT', 'RUNEUSDT', 'KSMUSDT', 'IPUSDT', 'BEAMUSDT', 'LITUSDT',
-]
-
-# Spot pairs — only real crypto, no stablecoins
-SPOT_SCAN_SYMBOLS = [
-    'ETHBTC', 'BTCUSDC', 'ETHUSDC', 'BTCEUR', 'ETHEUR', 'XRPEUR', 'SOLEUR',
-]
-
-
-def _get_positions():
-    """Fetch open positions from Bybit"""
-    global _open_positions
     try:
-        r = _bybit_request('GET','/v5/position/list',{'category':_auto_creds['trading_mode'],'settleCoin':'USDT'})
-        if r and r.get('retCode')==0:
-            positions={}
-            for p in r.get('result',{}).get('list',[]):
-                if float(p.get('size',0))>0:
-                    positions[p['symbol']]=p
-            # Clean up trade state for closed positions
-            closed = set(_open_positions.keys()) - set(positions.keys())
-            for sym in closed:
-                if sym in _trade_state:
-                    del _trade_state[sym]
-                    print(f'  [TradeMgmt] 🗑️ Cleaned state for closed position: {sym}')
-            _open_positions=positions
-            return positions
-    except: pass
-    return _open_positions
+        cat = category or (_auto_creds['trading_mode'] if symbol.endswith('USDT') else 'spot')
+
+        # Fetch same timeframes as browser: 30m, 4h, 1h (5m optional)
+        c30m = _get_klines(symbol, '30',  200, category=cat)
+        c4h  = _get_klines(symbol, '240', 100, category=cat)
+        c1h  = _get_klines(symbol, '60',  100, category=cat)
+
+        if not c30m or len(c30m) < 30:
+            return None
+
+        # Convert to format expected by analysis engine {o,h,l,c,v}
+        def to_ohlcv(raw):
+            if not raw: return None
+            return [{'o':c['open'],'h':c['high'],'l':c['low'],'c':c['close'],'v':c['volume']} for c in raw]
+
+        result = server_get_signal(
+            symbol,
+            to_ohlcv(c30m),
+            to_ohlcv(c4h),
+            c5m=None,
+            c1h=to_ohlcv(c1h),
+        )
+
+        if not result or result['signal'] == 'HOLD':
+            return None
+
+        return {
+            'symbol':      symbol,
+            'direction':   result['direction'],
+            'score':       result['confidence'],
+            'signal':      result['signal'],
+            'adx':         result.get('adx', 0),
+            'rsi':         result.get('rsi', 50),
+            'pattern':     result.get('patternName','None'),
+            'reason':      result.get('reason',''),
+            'price':       c30m[-1]['close'],
+            'category':    cat,
+        }
+
+    except Exception as e:
+        print(f'  [Scan] Error {symbol}: {e}')
+        return None
+
 
 def _place_order(symbol, side, size, price, category=None):
     """Place a market order on Bybit"""
@@ -1350,14 +1718,20 @@ def _manage_open_positions():
                             cur_sl = new_trail_sl
 
             # ── 3. TRAILING TP ───────────────────────────────
-            # Close position if profit drops $1 OR 2% from peak
-            # Only applies after we've made at least $1 profit
+            # Close position if profit drops $2 OR 2% from peak
+            # Only applies after:
+            #   a) peak profit has reached at least $2
+            #   b) position has been tracked for at least 3 cycles (3 min)
+            state['cycles'] = state.get('cycles', 0) + 1
             peak = state['peak_pnl']
-            if peak >= 1.0:
+
+            # Only activate trail TP after position is profitable AND mature
+            if peak >= 2.0 and state['cycles'] >= 3:
                 drop_dollar = peak - unreal_pnl
                 drop_pct    = drop_dollar / peak * 100 if peak > 0 else 0
 
-                trigger = drop_dollar >= 1.0 or drop_pct >= 2.0
+                # Trigger: profit dropped $2 from peak OR dropped 3% from peak
+                trigger = drop_dollar >= 2.0 or drop_pct >= 3.0
 
                 if trigger:
                     print(f'  [TradeMgmt] 🎯 TRAIL TP {symbol} | Peak=${peak:.2f} Now=${unreal_pnl:.2f} Drop=${drop_dollar:.2f} ({drop_pct:.1f}%) — closing')
@@ -1412,8 +1786,12 @@ def _auto_trading_loop():
 
             # Get current positions
             positions=_get_positions()
-            if len(positions)>=6:
-                print(f'  [AutoTrader] Max 6 server positions reached ({len(positions)} open) — skipping')
+            if len(positions)>=20:
+                print(f'  [AutoTrader] Max 20 server positions reached ({len(positions)} open) — skipping scan')
+                time.sleep(scan_interval)
+                continue
+            if len(positions)>=20:
+                print(f'  [AutoTrader] Max 20 server positions reached ({len(positions)} open) — skipping')
                 time.sleep(scan_interval)
                 continue
 
@@ -1449,12 +1827,14 @@ def _auto_trading_loop():
 
             # Place trades for top signals
             trades_this_cycle=0
-            for sig in strong[:3]:  # max 3 trades per scan
-                if len(positions)+trades_this_cycle>=6: break
+            for sig in strong[:5]:  # max 5 trades per scan
+                if len(positions)+trades_this_cycle>=20: break
                 sym=sig['symbol']
                 side='Buy' if sig['direction']==1 else 'Sell'
                 size=_auto_creds['trade_size']
-                print(f'  [AutoTrader] 🔥 {sym} {side} {sig["score"]:.0f}% ADX={sig["adx"]:.0f} RSI={sig["rsi"]:.0f}')
+                pat_str = f' | {sig["pattern"]}' if sig.get('pattern','None')!='None' else ''
+                print(f'  [AutoTrader] 🔥 {sym} {side} {sig["score"]:.0f}% ADX={sig.get("adx",0):.0f} RSI={sig.get("rsi",50):.0f}{pat_str}')
+                print(f'  [AutoTrader]    {sig.get("reason","")[:100]}')
                 if _place_order(sym, side, size, sig['price'], category=sig.get('category','linear')):
                     trades_this_cycle+=1
                     time.sleep(1)
