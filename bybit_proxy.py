@@ -1403,17 +1403,12 @@ def _auto_trading_loop():
             total_syms = len(SCAN_SYMBOLS) + len(SPOT_SCAN_SYMBOLS)
             print(f'  [AutoTrader] 🔍 Scanning {total_syms} symbols ({len(SCAN_SYMBOLS)} futures + {len(SPOT_SCAN_SYMBOLS)} spot)...')
 
-            # Check market regime
+            # Regime check — display only, does NOT block any direction
             regime=_check_regime()
-            if regime=='RANGING':
-                print(f'  [AutoTrader] ↔️ Market ranging — skipping this scan')
-                time.sleep(scan_interval)
-                continue
-
-            # TRENDING_UP = longs only, TRENDING_DOWN = shorts only
-            # UNKNOWN = both directions allowed (no BTC data / unclear)
-            allowed_dirs=[1] if regime=='TRENDING_UP' else ([-1] if regime=='TRENDING_DOWN' else [1,-1])
-            print(f'  [AutoTrader] 🌡️ Regime: {regime} | Allowed: {"LONG" if allowed_dirs==[1] else "SHORT" if allowed_dirs==[-1] else "BOTH"} | Mode: {_auto_creds["trading_mode"]}')
+            # Both LONG and SHORT always allowed regardless of regime
+            # Each coin's technical analysis determines its own direction
+            allowed_dirs=[1,-1]
+            print(f'  [AutoTrader] 🌡️ Regime: {regime} | Trading: BOTH directions | Mode: {_auto_creds["trading_mode"]}')
 
             # Get current positions
             positions=_get_positions()

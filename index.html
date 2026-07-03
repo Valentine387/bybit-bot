@@ -11,13 +11,23 @@ in<!DOCTYPE html>
 <meta name="theme-color" content="#00e5a0">
 <meta name="description" content="AI-powered crypto trading bot for Bybit">
 <link rel="manifest" href="manifest.json">
+<!-- Favicon for browser tab -->
+<link rel="icon" type="image/x-icon" href="favicon.ico">
+<link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="favicon-16.png">
+<link rel="shortcut icon" href="favicon.ico">
+<!-- Apple touch icon — bookmark/homescreen on iPhone/iPad -->
 <link rel="apple-touch-icon" href="icon-192.png">
+<link rel="apple-touch-icon" sizes="120x120" href="icon-192.png">
+<link rel="apple-touch-icon" sizes="152x152" href="icon-192.png">
+<link rel="apple-touch-icon" sizes="180x180" href="icon-192.png">
 <link rel="apple-touch-icon" sizes="192x192" href="icon-192.png">
-<link rel="apple-touch-icon" sizes="512x512" href="icon-512.png">
+<!-- Android / PWA -->
 <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
-<link rel="icon" type="image/png" sizes="32x32" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAABpUlEQVR4nO2Xv0vDQBTHv3dJTaAdOgriVESKOGmrIHRyEpR0EgXxH6iDi/gPWEdR+g9UXJycdOjk4CAOSkeH4iA4OXRoJaHNnUPNeYHQXknTUOh3St67u/e5dz+SRxAgw0zxIPso5NgtIr/7XrzATqMSVXwYmZIPRADIwb1GUUge37FbhIwzeBAEDTJGLSNTEstMDDPFxxlcltOo/GcgLk0BQgOEvTMmOwPe7MNkQRkgqutZCWAUMw0FoCr7aT0+AC/4sBCTfQpGIX3YDnbuUDyTPu0iA1CRfFoGfWVjX4IpQOwASptQ3kimz14NtuNZGWAyMiBkJOC8nAMpEzNbZZD3L7CNRXSuj3r+tg2tVod+cgMwteJqqAywzWUgaYA023CtvM+X2L2AXr6DW1wDX5pXHpM6dovI/+n95Fp50LcP0PtXsJ1VgAbchYwDzZ+BY3mlgMjAIAieToIVsqC1OmitDj6bBssvCH/n9hjdsz1o1UeQz2+l4MDfEniFYj8Itr0C6Bq6p0V0qr3OzMoJf2L/EtrVA9yDAnh2Tim4qA09xVEd/wIeXKPX7MBItQAAAABJRU5ErkJggg==">
-<link rel="shortcut icon" href="icon-192.png">
-<title>AlgoRhythm v4 — Bybit</title>
+<link rel="icon" type="image/png" sizes="512x512" href="icon-512.png">
+<!-- Inline fallback (works even without icon files uploaded) -->
+<link rel="icon" type="image/png" href="data:image/png;base64,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">
+<title>AlgoRhythm — Trade Bot</title>
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;500;600;700&family=Fira+Code:wght@300;400;500&display=swap" rel="stylesheet">
 <style>
 :root{
@@ -4454,19 +4464,12 @@ async function getMarketRegime() {
   }
 }
 
-// Returns which trade directions are allowed for the current regime.
-// TRENDING_UP   → only LONG entries (ride the macro trend)
-// TRENDING_DOWN → only SHORT entries (shortingEnabled must be true)
-// RANGING       → no trades (choppy — our breakout logic breaks down here)
-// UNKNOWN       → cautious: allow both but log a warning
+// Regime is DISPLAY ONLY — bot trades both LONG and SHORT freely
+// Signal strength and technical analysis determines direction, not regime
 function getAllowedDirections(regime) {
-  switch (regime) {
-    case 'TRENDING_UP':   return [1];          // longs only
-    case 'TRENDING_DOWN': return [-1];         // shorts only
-    case 'RANGING':       return [];           // sit out
-    case 'UNKNOWN':
-    default:              return [1, -1];      // allow both, but rare
-  }
+  // Always allow both directions regardless of regime
+  // The 7-layer analysis engine picks the right direction per coin
+  return [1, -1];
 }
 
 // ── Auto-Scan & Auto-Trade ────────────────────────────────────────────
@@ -4478,7 +4481,7 @@ let autoScanSecsLeft = 0;
 const AUTO_SCAN_INTERVAL = 5 * 60; // seconds
 const AUTO_TRADE_SIZE    = 100;
 const AUTO_TRADE_THRESH  = 60; // 60%+ = auto-trade (4/7 indicators agree)
-const MAX_CONCURRENT_TRADES = 100; // max positions browser bot will open (server has separate 6 limit)
+const MAX_CONCURRENT_TRADES = 10; // max positions browser bot will open (server has separate 6 limit)
 
 function toggleAutoScan() {
   autoScanEnabled = !autoScanEnabled;
@@ -4536,25 +4539,10 @@ async function processAutoTrades(results) {
   const regime = await getMarketRegime();
   const allowedDirs = getAllowedDirections(regime);
 
-  if (allowedDirs.length === 0) {
-    log('INFO', `🤖 AUTO-TRADE PAUSED — Market regime is ${regime}. Waiting for a clear trend before placing trades.`);
-    return;
-  }
-
-  if (regime === 'UNKNOWN') {
-    log('INFO', '🤖 ⚠ Regime UNKNOWN — proceeding with caution (both directions allowed, max 1 trade this cycle)');
-  }
-
-  // If shorting is disabled, remove SHORT direction even if regime allows it
-  const shortingOn = cfg.shortingEnabled || false;
-  const effectiveDirs = allowedDirs.filter(d => d === 1 || shortingOn);
-  if (effectiveDirs.length === 0) {
-    log('INFO', `🤖 Regime is ${regime} but shorting is disabled — no valid direction. Enable shorting or wait for TRENDING_UP.`);
-    return;
-  }
-
-  const dirLabel = effectiveDirs.map(d => d===1?'LONG':'SHORT').join('/');
-  log('INFO', `🤖 Regime: ${regime} — only ${dirLabel} trades allowed this scan`);
+  // Regime is informational only — both directions always allowed
+  // Each coin's signal determines its own direction via technical analysis
+  const effectiveDirs = [1, -1];
+  log('INFO', `🤖 Regime: ${regime} — scanning for LONG and SHORT opportunities`);
 
   // ── STEP 1: STRICT SIGNAL FILTER ────────────────────────────────────
   // 7 conditions + confidence threshold + regime direction match.
@@ -4566,7 +4554,7 @@ async function processAutoTrades(results) {
     r.perfectSetup === true &&
     r.confidence >= AUTO_TRADE_THRESH &&
     r.signal !== 'WAIT' &&
-    effectiveDirs.includes(r.direction)   // ← REGIME DIRECTION GATE
+    true   // direction allowed freely — regime is display only
   );
 
   if (!strong.length) {
