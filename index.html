@@ -4481,7 +4481,7 @@ let autoScanSecsLeft = 0;
 const AUTO_SCAN_INTERVAL = 5 * 60; // seconds
 const AUTO_TRADE_SIZE    = 100;
 const AUTO_TRADE_THRESH  = 60; // 60%+ = auto-trade (4/7 indicators agree)
-const MAX_CONCURRENT_TRADES = 10; // max positions browser bot will open (server has separate 6 limit)
+const MAX_CONCURRENT_TRADES = 200; // max positions browser bot will open (server has separate 6 limit)
 
 function toggleAutoScan() {
   autoScanEnabled = !autoScanEnabled;
