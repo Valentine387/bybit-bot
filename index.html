@@ -744,7 +744,7 @@ body::before{content:'';position:fixed;inset:0;background-image:url("data:image/
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:5px">
             <div>
               <div style="font-family:var(--mono);font-size:8px;color:var(--muted);margin-bottom:2px">Value $</div>
-              <input id="tradeValue" type="number" value="20" min="1" style="width:100%;background:var(--card2);border:1px solid var(--border2);border-radius:5px;padding:4px 6px;color:#fff;font-family:var(--mono);font-size:11px;outline:none"/>
+              <input id="tradeValue" type="number" value="100" min="1" style="width:100%;background:var(--card2);border:1px solid var(--border2);border-radius:5px;padding:4px 6px;color:#fff;font-family:var(--mono);font-size:11px;outline:none"/>
             </div>
             <div>
               <div style="font-family:var(--mono);font-size:8px;color:var(--muted);margin-bottom:2px">Leverage</div>
@@ -803,7 +803,7 @@ body::before{content:'';position:fixed;inset:0;background-image:url("data:image/
     <!-- Quick trade -->
     <div style="padding:10px 12px;border-top:1px solid var(--border);background:var(--surface)">
       <div style="display:flex;gap:6px;margin-bottom:8px">
-        <input type="number" id="mobTradeSize" value="20" style="flex:1;background:var(--card2);border:1px solid var(--border2);border-radius:6px;padding:8px;color:#fff;font-family:var(--mono);font-size:13px;outline:none"/>
+        <input type="number" id="mobTradeSize" value="100" style="flex:1;background:var(--card2);border:1px solid var(--border2);border-radius:6px;padding:8px;color:#fff;font-family:var(--mono);font-size:13px;outline:none"/>
         <select id="mobTradeLev" style="width:80px;background:var(--card2);border:1px solid var(--border2);border-radius:6px;padding:8px;color:#fff;font-family:var(--mono);font-size:12px;outline:none">
           <option value="1">×1</option><option value="3">×3</option><option value="5">×5</option><option value="10">×10</option>
         </select>
@@ -1208,8 +1208,8 @@ body::before{content:'';position:fixed;inset:0;background-image:url("data:image/
     <div class="form-row" style="gap:10px;margin-bottom:4px">
       <div class="modal-field" style="flex:1.2">
         <label class="modal-label" style="font-size:10px">💵 Trade Size (USDT)</label>
-        <div class="prefix-wrap"><span class="prefix-box">$</span><input class="modal-input" id="aaSize" type="number" min="1" value="20" style="font-size:13px"/></div>
-        <p style="font-size:10px;color:var(--muted2);margin-top:3px">$20 = 17% of $120 balance per trade</p>
+        <div class="prefix-wrap"><span class="prefix-box">$</span><input class="modal-input" id="aaSize" type="number" min="1" value="100" style="font-size:13px"/></div>
+        <p style="font-size:10px;color:var(--muted2);margin-top:3px">$100 per trade (adjust to your balance)</p>
       </div>
       <div class="modal-field" style="flex:1">
         <label class="modal-label" style="font-size:10px">✕ Leverage</label>
@@ -1229,12 +1229,12 @@ body::before{content:'';position:fixed;inset:0;background-image:url("data:image/
       <div class="modal-field" style="flex:1">
         <label class="modal-label" style="font-size:10px">🎯 Take Profit %</label>
         <div class="suffix-wrap"><input class="modal-input" id="aaTP" type="number" min="1" value="15" style="font-size:13px"/><span class="suffix-box">%</span></div>
-        <p style="font-size:10px;color:var(--muted2);margin-top:3px" id="aaTpHint">+15% on $20 = +$3.00 profit</p>
+        <p style="font-size:10px;color:var(--muted2);margin-top:3px" id="aaTpHint">+15% on $100 = +$15.00 profit</p>
       </div>
       <div class="modal-field" style="flex:1">
         <label class="modal-label" style="font-size:10px">🛑 Stop Loss %</label>
         <div class="suffix-wrap"><input class="modal-input" id="aaSL" type="number" min="0.1" step="0.1" value="3" style="font-size:13px"/><span class="suffix-box">%</span></div>
-        <p style="font-size:10px;color:var(--muted2);margin-top:3px" id="aaSlHint">-3% on $20 = -$0.60 max loss</p>
+        <p style="font-size:10px;color:var(--muted2);margin-top:3px" id="aaSlHint">-3% on $100 = -$3.00 max loss</p>
       </div>
     </div>
 
@@ -1287,7 +1287,7 @@ body::before{content:'';position:fixed;inset:0;background-image:url("data:image/
         </button>
         <button class="sbtn" style="font-size:11px;padding:8px 10px;border-color:var(--amber-b);color:var(--amber);text-align:left;line-height:1.5" onclick="applyPreset('balanced')">
           ⚖️ <strong>Balanced</strong> ✅ Recommended<br>
-          <span style="font-size:9px;color:var(--muted2)">$20 · TP 15% · SL 3% · Trail 2%</span><br>
+          <span style="font-size:9px;color:var(--muted2)">$100 · TP 15% · SL 3% · Trail 2%</span><br>
           <span style="font-size:9px;color:var(--amber)">Max loss: $0.60 · Profit: $3.00</span>
         </button>
         <button class="sbtn" style="font-size:11px;padding:8px 10px;border-color:var(--red-b);color:var(--red);text-align:left;line-height:1.5" onclick="applyPreset('aggressive')">
@@ -1297,7 +1297,7 @@ body::before{content:'';position:fixed;inset:0;background-image:url("data:image/
         </button>
         <button class="sbtn" style="font-size:11px;padding:8px 10px;border-color:var(--blue);color:var(--blue);text-align:left;line-height:1.5" onclick="applyPreset('lockprofit')">
           🔒 <strong>90% Profit Lock</strong><br>
-          <span style="font-size:9px;color:var(--muted2)">$20 · TP 15% · Trail 1.5% · $1.50 floor</span><br>
+          <span style="font-size:9px;color:var(--muted2)">$100 · TP 15% · Trail 1.5% · $1.50 floor</span><br>
           <span style="font-size:9px;color:var(--blue)">Locks 90% of gains automatically</span>
         </button>
       </div>
@@ -3980,7 +3980,7 @@ const PRESETS = {
     desc:'Size $10 · TP +10% · SL -1.5% · ⟳TP 1% · ⟳SL 1% · ×1 — Safe, small gains'
   },
   balanced: {
-    size:20, tp:15, sl:3, trail:2, trailSL:2, dollarTrail:1.50, leverage:1,
+    size:100, tp:15, sl:3, trail:2, trailSL:2, dollarTrail:1.50, leverage:1,
     desc:'Size $20 · TP +15% · SL -3% · ⟳TP 2% · ⟳SL 2% · $1.50 floor · ×1 — Best for $120'
   },
   aggressive: {
@@ -3988,7 +3988,7 @@ const PRESETS = {
     desc:'Size $35 · TP +25% · SL -5% · ⟳TP 3% · ⟳SL 3% · ×2 — High risk/reward'
   },
   lockprofit: {
-    size:20, tp:15, sl:2, trail:1.5, trailSL:2, dollarTrail:1.50, leverage:1,
+    size:100, tp:15, sl:2, trail:1.5, trailSL:2, dollarTrail:1.50, leverage:1,
     desc:'Size $20 · TP +15% · SL -2% · ⟳TP 1.5% · ⟳SL 2% · $1.50 floor — 90% profit lock'
   },
 };
@@ -4003,7 +4003,7 @@ function openApplyAllModal() {
 }
 
 function updatePreview() {
-  const size = parseFloat(document.getElementById('aaSize')?.value) || 20;
+  const size = parseFloat(document.getElementById('aaSize')?.value) || 100;
   const tp   = parseFloat(document.getElementById('aaTP')?.value)   || 15;
   const sl   = parseFloat(document.getElementById('aaSL')?.value)   || 3;
   const profit = (size * tp / 100).toFixed(2);
@@ -4039,7 +4039,7 @@ async function lookupCoinForAA() {
     const pct24h  = (parseFloat(t.price24hPcnt) * 100).toFixed(2);
     const vol24h  = parseFloat(t.turnover24h);
     const volStr  = vol24h >= 1e6 ? `$${(vol24h/1e6).toFixed(1)}M` : `$${(vol24h/1e3).toFixed(0)}K`;
-    const size    = parseFloat(document.getElementById('aaSize')?.value)  || 20;
+    const size    = parseFloat(document.getElementById('aaSize')?.value)  || 100;
     const tp      = parseFloat(document.getElementById('aaTP')?.value)    || 15;
     const sl      = parseFloat(document.getElementById('aaSL')?.value)    || 3;
 
@@ -4478,7 +4478,7 @@ let autoScanSecsLeft = 0;
 const AUTO_SCAN_INTERVAL = 5 * 60; // seconds
 const AUTO_TRADE_SIZE    = 100;
 const AUTO_TRADE_THRESH  = 60; // 60%+ = auto-trade (4/7 indicators agree)
-const MAX_CONCURRENT_TRADES = 6; // hard cap on open positions at once — prevents over-exposure in a market-wide move
+const MAX_CONCURRENT_TRADES = 10; // max positions browser bot will open (server has separate 6 limit)
 
 function toggleAutoScan() {
   autoScanEnabled = !autoScanEnabled;

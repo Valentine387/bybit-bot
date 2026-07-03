@@ -1418,7 +1418,7 @@ def _auto_trading_loop():
             # Get current positions
             positions=_get_positions()
             if len(positions)>=6:
-                print(f'  [AutoTrader] Max positions reached ({len(positions)}) — skipping')
+                print(f'  [AutoTrader] Max 6 server positions reached ({len(positions)} open) — skipping')
                 time.sleep(scan_interval)
                 continue
 
