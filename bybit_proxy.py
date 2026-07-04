@@ -380,6 +380,11 @@ class BybitProxyHandler(BaseHTTPRequestHandler):
             # auto_enabled: only update if explicitly included in request
             if 'auto_enabled' in body:
                 _auto_creds['auto_enabled'] = bool(body['auto_enabled'])
+                # Persist user choice so Render restarts don't override it
+                try:
+                    with open('/tmp/auto_trading_state.txt', 'w') as _f:
+                        _f.write('true' if _auto_creds['auto_enabled'] else 'false')
+                except Exception: pass
             enabled = _auto_creds['auto_enabled']
             print(f"  [AutoTrader] Credentials updated — auto={'ON ✅' if enabled else 'OFF'} mode={_auto_creds['trading_mode']} size=${_auto_creds['trade_size']}")
             self.send_json(200, {"status": "ok", "auto_enabled": enabled})
@@ -397,11 +402,16 @@ class BybitProxyHandler(BaseHTTPRequestHandler):
             })
 
         elif path == "/auto-toggle":
-            # Toggle auto trading on/off
+            # Toggle auto trading on/off and persist the choice
             _auto_creds['auto_enabled'] = not _auto_creds['auto_enabled']
             state = 'ON ✅' if _auto_creds['auto_enabled'] else 'OFF'
             has_creds = bool(_auto_creds.get('api_key')) and bool(_auto_creds.get('api_secret'))
-            print(f"  [AutoTrader] Auto-trading {state} | has_credentials={has_creds}")
+            print(f"  [AutoTrader] Auto-trading toggled → {state} | has_credentials={has_creds}")
+            # Persist so Render restart does not override user choice
+            try:
+                with open('/tmp/auto_trading_state.txt', 'w') as _f:
+                    _f.write('true' if _auto_creds['auto_enabled'] else 'false')
+            except Exception: pass
             if _auto_creds['auto_enabled'] and not has_creds:
                 print(f"  [AutoTrader] ⚠ No credentials — set BYBIT_API_KEY env var or connect from browser first")
             self.send_json(200, {
@@ -1786,7 +1796,7 @@ def _auto_trading_loop():
 
             # Get current positions
             positions=_get_positions()
-            if len(positions)>=100:
+            if len(positions)>=20:
                 print(f'  [AutoTrader] Max 20 server positions reached ({len(positions)} open) — skipping scan')
                 time.sleep(scan_interval)
                 continue
@@ -1827,8 +1837,8 @@ def _auto_trading_loop():
 
             # Place trades for top signals
             trades_this_cycle=0
-            for sig in strong[:50]:  # max 5 trades per scan
-                if len(positions)+trades_this_cycle>=100: break
+            for sig in strong[:5]:  # max 5 trades per scan
+                if len(positions)+trades_this_cycle>=20: break
                 sym=sig['symbol']
                 side='Buy' if sig['direction']==1 else 'Sell'
                 size=_auto_creds['trade_size']
@@ -1845,6 +1855,20 @@ def _auto_trading_loop():
             print(f'  [AutoTrader] Loop error: {e}')
 
         time.sleep(scan_interval)
+
+# Restore persisted auto_enabled — survives Render restarts
+# User clicking SERVER OFF writes /tmp/auto_trading_state.txt
+# We read it back here so restarts honour the user's last choice
+try:
+    with open('/tmp/auto_trading_state.txt', 'r') as _sf:
+        _persisted = _sf.read().strip()
+    if _persisted in ('true', 'false'):
+        _auto_creds['auto_enabled'] = (_persisted == 'true')
+        print(f"  [AutoTrader] Restored auto_enabled={_auto_creds['auto_enabled']} from saved state")
+except FileNotFoundError:
+    pass  # First run — use env var default (AUTO_TRADING)
+except Exception as _ex:
+    print(f"  [AutoTrader] Could not read saved state: {_ex}")
 
 # Start autonomous trading engine
 _auto_thread = threading.Thread(target=_auto_trading_loop, daemon=True)
