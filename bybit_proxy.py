@@ -1767,6 +1767,69 @@ def _trade_management_loop():
             print(f'  [TradeMgmt] Loop error: {e}')
         time.sleep(60)  # Check every 60 seconds
 
+
+# ═══════════════════════════════════════════════════════
+# TELEGRAM SIGNAL ALERTS
+# Set in Render env:  TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID
+# Strong signals (>= MIN_CONFIDENCE) are pushed to the channel.
+# Per-symbol cooldown prevents repeat spam every 5-min scan.
+# ═══════════════════════════════════════════════════════
+TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', '').strip()
+TELEGRAM_CHAT_ID   = os.environ.get('TELEGRAM_CHAT_ID', '').strip()
+TG_COOLDOWN_SECS   = int(os.environ.get('TELEGRAM_COOLDOWN_SECS', '3600'))  # 1h per symbol
+_tg_last_alert = {}
+
+def _telegram_enabled():
+    return bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID)
+
+def _telegram_send(text):
+    """Send a message to the configured Telegram channel. Never raises."""
+    if not _telegram_enabled():
+        return False
+    try:
+        url = f'https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage'
+        payload = json.dumps({
+            'chat_id': TELEGRAM_CHAT_ID,
+            'text': text,
+            'parse_mode': 'HTML',
+            'disable_web_page_preview': True
+        }).encode()
+        req = urllib.request.Request(url, data=payload,
+                                     headers={'Content-Type': 'application/json'})
+        with urllib.request.urlopen(req, timeout=10, context=ssl_ctx) as r:
+            ok = json.loads(r.read()).get('ok', False)
+        if not ok:
+            print('  [Telegram] send failed (API returned not-ok)')
+        return ok
+    except Exception as e:
+        print(f'  [Telegram] send error: {e}')
+        return False
+
+def _telegram_signal_alert(sig, min_conf):
+    """Push one strong signal to the channel, respecting per-symbol cooldown."""
+    sym = sig['symbol']
+    now = time.time()
+    if now - _tg_last_alert.get(sym, 0) < TG_COOLDOWN_SECS:
+        return
+    _tg_last_alert[sym] = now
+    side   = 'LONG 🟢' if sig['direction'] == 1 else 'SHORT 🔴'
+    arrow  = '▲' if sig['direction'] == 1 else '▼'
+    coin   = sym.replace('USDT', '')
+    pat    = sig.get('pattern', 'None')
+    pat_ln = f"\n🕯 Pattern: <b>{pat}</b>" if pat and pat != 'None' else ''
+    msg = (
+        f"⚡ <b>STRONG SIGNAL</b> — {arrow} <b>{coin}</b>\n"
+        f"\n"
+        f"📊 Direction: <b>{side}</b>\n"
+        f"🎯 Confidence: <b>{sig['score']:.0f}%</b> (threshold {min_conf:.0f}%)\n"
+        f"💵 Price: <b>${sig['price']}</b>\n"
+        f"📈 ADX: {sig.get('adx', 0):.0f} · RSI: {sig.get('rsi', 50):.0f}{pat_ln}\n"
+        f"\n"
+        f"🤖 AlgoRhythm v4 · not financial advice"
+    )
+    if _telegram_send(msg):
+        print(f'  [Telegram] 📨 Signal alert sent: {sym} {side} {sig["score"]:.0f}%')
+
 def _auto_trading_loop():
     """Main autonomous trading loop — runs every 5 minutes on Render"""
     import random
@@ -1777,10 +1840,11 @@ def _auto_trading_loop():
 
     while True:
         try:
-            if not _auto_creds['auto_enabled']:
+            # Scan runs if auto-trading is ON *or* Telegram alerts are configured
+            if not _auto_creds['auto_enabled'] and not _telegram_enabled():
                 time.sleep(30)
                 continue
-            if not _auto_creds['api_key'] or not _auto_creds['api_secret']:
+            if _auto_creds['auto_enabled'] and (not _auto_creds['api_key'] or not _auto_creds['api_secret']):
                 time.sleep(60)
                 continue
 
@@ -1794,8 +1858,11 @@ def _auto_trading_loop():
             allowed_dirs=[1,-1]
             print(f'  [AutoTrader] 🌡️ Regime: {regime} | Trading: BOTH directions | Mode: {_auto_creds["trading_mode"]}')
 
-            # Get current positions
-            positions=_get_positions()
+            # Get current positions (signals-only mode may have no creds yet)
+            try:
+                positions=_get_positions() if (_auto_creds['api_key'] and _auto_creds['api_secret']) else []
+            except Exception:
+                positions=[]
             if len(positions)>=20:
                 print(f'  [AutoTrader] Max 20 server positions reached ({len(positions)} open) — skipping scan')
                 time.sleep(scan_interval)
@@ -1832,6 +1899,16 @@ def _auto_trading_loop():
                 best=signals[0]
                 print(f'  [AutoTrader] Best signal: {best["symbol"]} {best["score"]:.0f}% — below {min_conf}% threshold (need {min_conf}%+)')
                 print(f'  [AutoTrader] Top 3: {[(s["symbol"],s["score"]) for s in signals[:3]]}')
+                time.sleep(scan_interval)
+                continue
+
+            # 📨 Telegram: broadcast strong signals to the channel
+            for sig in strong[:5]:
+                _telegram_signal_alert(sig, min_conf)
+
+            # Trading only happens when auto-trading is enabled
+            if not _auto_creds['auto_enabled']:
+                print(f'  [AutoTrader] Signals-only mode — {len(strong)} strong signal(s) alerted, no trades placed')
                 time.sleep(scan_interval)
                 continue
 
