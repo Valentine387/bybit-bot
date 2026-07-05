@@ -22,6 +22,30 @@ ALPACA_NEWS = "https://data.alpaca.markets/v1beta1"
 USE_DEMO = os.environ.get("DEMO_MODE", "true").lower() == "true"
 BASE_URL  = BYBIT_DEMO if USE_DEMO else BYBIT_LIVE
 
+# ── Per-request demo/live routing ─────────────────────────────────────
+# Each browser request may carry ?demo=true|false. Background loops set
+# their thread context from the stored credentials. Fallback: env default.
+import threading as _threading_mod
+_req_ctx = _threading_mod.local()
+
+def _base(demo=None):
+    """Effective Bybit base URL for this request/thread."""
+    if demo is None:
+        demo = getattr(_req_ctx, 'demo', None)
+    if demo is None:
+        demo = USE_DEMO
+    return BYBIT_DEMO if demo else BYBIT_LIVE
+
+def _parse_demo_param(path_qs):
+    """Extract demo flag from a query string; None if absent."""
+    try:
+        qs = urllib.parse.urlparse(path_qs).query
+        v = urllib.parse.parse_qs(qs).get('demo', [None])[0]
+        if v is None: return None
+        return str(v).lower() == 'true'
+    except Exception:
+        return None
+
 # ── Windows DNS fix ────────────────────────────────────────────────────
 # Windows sometimes blocks Python DNS — patch to use Google 8.8.8.8
 import socket as _socket, subprocess as _subprocess, re as _re
@@ -116,7 +140,7 @@ def bybit_headers(api_key, api_secret, params_str=""):
 def bybit_get(path, params, api_key, api_secret):
     sorted_params = dict(sorted(params.items()))
     query = urllib.parse.urlencode(sorted_params)
-    url   = BASE_URL + path + ("?" + query if query else "")
+    url   = _base() + path + ("?" + query if query else "")
     hdrs  = bybit_headers(api_key, api_secret, query)
     req   = urllib.request.Request(url)
     for k, v in hdrs.items():
@@ -143,7 +167,7 @@ def bybit_get(path, params, api_key, api_secret):
 def bybit_post(path, body, api_key, api_secret):
     body_str = json.dumps(body, separators=(',', ':'))  # compact JSON
     hdrs     = bybit_headers(api_key, api_secret, body_str)
-    url      = BASE_URL + path
+    url      = _base() + path
     req      = urllib.request.Request(url, data=body_str.encode('utf-8'), method="POST")
     for k, v in hdrs.items():
         req.add_header(k, v)
@@ -248,6 +272,7 @@ class BybitProxyHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
+        _req_ctx.demo = _parse_demo_param(self.path)
         parsed = urllib.parse.urlparse(self.path)
         params = urllib.parse.parse_qs(parsed.query)
         api_key    = params.get("key",    [""])[0]
@@ -377,6 +402,7 @@ class BybitProxyHandler(BaseHTTPRequestHandler):
             if body.get('tp_pct'):       _auto_creds['tp_pct']       = float(body['tp_pct'])
             if body.get('sl_pct'):       _auto_creds['sl_pct']       = float(body['sl_pct'])
             if body.get('min_confidence'): _auto_creds['min_confidence'] = float(body['min_confidence'])
+            if 'demo' in body: _auto_creds['demo'] = bool(body['demo']) if not isinstance(body['demo'], str) else body['demo'].lower() == 'true'
             # auto_enabled: only update if explicitly included in request
             if 'auto_enabled' in body:
                 _auto_creds['auto_enabled'] = bool(body['auto_enabled'])
@@ -401,7 +427,8 @@ class BybitProxyHandler(BaseHTTPRequestHandler):
                 "min_confidence": _auto_creds['min_confidence'],
                 "auto_env_default": os.environ.get('AUTO_TRADING', 'false'),
                 "telegram_enabled": _telegram_enabled(),
-                "build":          "v3.1-telegram",
+                "build":          "v3.2-demo-live",
+                "demo":           _auto_creds.get('demo', USE_DEMO),
             })
 
         elif path == "/telegram-test":
@@ -447,6 +474,7 @@ class BybitProxyHandler(BaseHTTPRequestHandler):
             self.send_json(404, {"error": "Not found"})
 
     def do_POST(self):
+        _req_ctx.demo = _parse_demo_param(self.path)
         parsed = urllib.parse.urlparse(self.path)
         length = int(self.headers.get("Content-Length", 0))
         body   = json.loads(self.rfile.read(length)) if length else {}
@@ -962,6 +990,7 @@ _auto_creds = {
     'sl_pct': float(os.environ.get('SL_PCT', '3')),
     'auto_enabled': os.environ.get('AUTO_TRADING', 'false').lower() == 'true',
     'min_confidence': float(os.environ.get('MIN_CONFIDENCE', '60')),
+    'demo': os.environ.get('DEMO_MODE', 'true').lower() == 'true',
 }
 _open_positions = {}  # symbol -> position data
 _last_regime = 'UNKNOWN'
@@ -999,7 +1028,7 @@ def _bybit_request(method, path, params=None, body=None, api_key=None, api_secre
             'X-BAPI-RECV-WINDOW': recv_window,
             'Content-Type': 'application/json',
         }
-        url = BASE_URL + path
+        url = _base() + path
         if method == 'GET' and params:
             url += '?' + urllib.parse.urlencode(params)
         data = json.dumps(body).encode() if body else None
@@ -1780,6 +1809,7 @@ def _trade_management_loop():
     print('  [TradeMgmt] Features: Breakeven +1% | Trail SL 1.5% | Trail TP $1 or 2% from peak')
     while True:
         try:
+            _req_ctx.demo = _auto_creds.get('demo')
             if _auto_creds.get('api_key') and _auto_creds.get('api_secret'):
                 _manage_open_positions()
         except Exception as e:
@@ -1875,6 +1905,7 @@ def _auto_trading_loop():
 
     while True:
         try:
+            _req_ctx.demo = _auto_creds.get('demo')  # route this cycle demo/live
             # Scan runs if auto-trading is ON *or* Telegram alerts are configured
             if not _auto_creds['auto_enabled'] and not _telegram_enabled():
                 time.sleep(30)
