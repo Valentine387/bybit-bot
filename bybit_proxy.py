@@ -276,7 +276,7 @@ class BybitProxyHandler(BaseHTTPRequestHandler):
             api_key    = params.get("key",      [""])[0]
             api_secret = params.get("secret",   [""])[0]
             category   = params.get("category", ["linear"])[0]
-            limit      = int(params.get("limit", ["50"])[0])
+            limit      = int(params.get("limit", ["100"])[0])
             hours      = int(params.get("hours", ["24"])[0])
 
             try:
@@ -399,7 +399,26 @@ class BybitProxyHandler(BaseHTTPRequestHandler):
                 "trading_mode":   _auto_creds['trading_mode'],
                 "trade_size":     _auto_creds['trade_size'],
                 "min_confidence": _auto_creds['min_confidence'],
+                "auto_env_default": os.environ.get('AUTO_TRADING', 'false'),
+                "telegram_enabled": _telegram_enabled(),
+                "build":          "v3.1-telegram",
             })
+
+        elif path == "/telegram-test":
+            # Diagnostic: verify Telegram config end-to-end from any browser
+            if not TELEGRAM_BOT_TOKEN:
+                self.send_json(200, {"ok": False, "error": "TELEGRAM_BOT_TOKEN env var is not set on Render"})
+            elif not TELEGRAM_CHAT_ID:
+                self.send_json(200, {"ok": False, "error": "TELEGRAM_CHAT_ID env var is not set on Render"})
+            else:
+                ok, detail = _telegram_send_detailed(
+                    "\u2705 <b>Test message</b> \u2014 your TradeAlgorythm server can post to this channel. "
+                    "Strong signals (60%+) will appear here automatically.")
+                self.send_json(200, {
+                    "ok": ok,
+                    "detail": detail,
+                    "chat_id_configured": TELEGRAM_CHAT_ID[:4] + "..." if len(TELEGRAM_CHAT_ID) > 4 else TELEGRAM_CHAT_ID,
+                })
 
         elif path == "/auto-toggle":
             # Toggle auto trading on/off and persist the choice
@@ -1782,10 +1801,10 @@ _tg_last_alert = {}
 def _telegram_enabled():
     return bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID)
 
-def _telegram_send(text):
-    """Send a message to the configured Telegram channel. Never raises."""
+def _telegram_send_detailed(text):
+    """Send to Telegram; returns (ok, detail) with Telegram's real error text."""
     if not _telegram_enabled():
-        return False
+        return False, 'telegram not configured (missing env vars)'
     try:
         url = f'https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage'
         payload = json.dumps({
@@ -1797,13 +1816,28 @@ def _telegram_send(text):
         req = urllib.request.Request(url, data=payload,
                                      headers={'Content-Type': 'application/json'})
         with urllib.request.urlopen(req, timeout=10, context=ssl_ctx) as r:
-            ok = json.loads(r.read()).get('ok', False)
-        if not ok:
-            print('  [Telegram] send failed (API returned not-ok)')
-        return ok
+            resp = json.loads(r.read())
+        if resp.get('ok'):
+            return True, 'sent'
+        return False, resp.get('description', 'unknown telegram error')
+    except urllib.error.HTTPError as e:
+        try:
+            body = json.loads(e.read())
+            desc = body.get('description', str(e))
+        except Exception:
+            desc = str(e)
+        print(f'  [Telegram] HTTP {e.code}: {desc}')
+        return False, f'HTTP {e.code}: {desc}'
     except Exception as e:
         print(f'  [Telegram] send error: {e}')
-        return False
+        return False, str(e)
+
+def _telegram_send(text):
+    """Send a message to the configured Telegram channel. Never raises."""
+    ok, detail = _telegram_send_detailed(text)
+    if not ok and _telegram_enabled():
+        print(f'  [Telegram] send failed: {detail}')
+    return ok
 
 def _telegram_signal_alert(sig, min_conf):
     """Push one strong signal to the channel, respecting per-symbol cooldown."""
@@ -1836,6 +1870,7 @@ def _auto_trading_loop():
     # Stagger start to not hammer API immediately
     time.sleep(30)
     print('  [AutoTrader] 🤖 Autonomous trading engine started')
+    print(f"  [AutoTrader] ⚙ CONFIG: AUTO_TRADING env={os.environ.get('AUTO_TRADING','<unset>')} | runtime auto_enabled={_auto_creds['auto_enabled']} | telegram={'ON' if _telegram_enabled() else 'OFF'} | build=v3.1-telegram")
     scan_interval = int(os.environ.get('SCAN_INTERVAL_SECS', '300'))  # 5 min default
 
     while True:
