@@ -431,7 +431,8 @@ class BybitProxyHandler(BaseHTTPRequestHandler):
                 "demo":           _auto_creds.get('demo', USE_DEMO),
             })
 
-        elif path == "/news":
+        elif path == "/site-news":
+            # Website news feed (server-side Alpaca keys, cached 5 min)
             self.send_json(200, _fetch_alpaca_news(10))
 
         elif path == "/telegram-test":
