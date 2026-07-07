@@ -1757,6 +1757,30 @@ def _manage_open_positions():
 
             is_buy = side == 'Buy'
 
+            # ── 0. SAFETY NET: ensure an exchange-native SL exists ──
+            # Positions opened before this update (or whose SL was cleared)
+            # get a hard stop registered on Bybit itself, so they stay
+            # protected even if this server sleeps, restarts, or crashes.
+            if cur_sl == 0:
+                try:
+                    sl_pct   = max(float(_auto_creds.get('sl_pct', 3) or 3), 2.0)
+                    sl_price = entry * (1 - sl_pct / 100.0) if is_buy else entry * (1 + sl_pct / 100.0)
+                    r = _bybit_request('POST', '/v5/position/trading-stop', body={
+                        'category': category,
+                        'symbol':   symbol,
+                        'stopLoss': str(round(sl_price, 8)),
+                        'slTriggerBy': 'MarkPrice',
+                        'tpslMode': 'Full',
+                        'positionIdx': 0,
+                    })
+                    if r and r.get('retCode') == 0:
+                        print(f'  [TradeMgmt] 🛡 Safety SL backfilled for {symbol} @ {sl_price:.6f}')
+                        cur_sl = sl_price
+                    else:
+                        print(f'  [TradeMgmt] Safety SL rejected for {symbol}: {r}')
+                except Exception as e:
+                    print(f'  [TradeMgmt] Safety SL error {symbol}: {e}')
+
             # ── 1. BREAKEVEN ─────────────────────────────────
             # Move SL to entry when price moves +1% in our favour
             if not state['be_done']:
