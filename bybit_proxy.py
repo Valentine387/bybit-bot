@@ -431,6 +431,9 @@ class BybitProxyHandler(BaseHTTPRequestHandler):
                 "demo":           _auto_creds.get('demo', USE_DEMO),
             })
 
+        elif path == "/news":
+            self.send_json(200, _fetch_alpaca_news(10))
+
         elif path == "/telegram-test":
             # Diagnostic: verify Telegram config end-to-end from any browser
             if not TELEGRAM_BOT_TOKEN:
@@ -1621,7 +1624,22 @@ def _place_order(symbol, side, size, price, category=None):
             print(f'  [AutoTrader] {symbol}: order too small ({qty*price:.2f} < {min_notional})')
             return False
         body={'category':mode,'symbol':symbol,'side':side,'orderType':'Market','qty':str(qty)}
-        if mode=='linear': body['leverage']='1'
+        if mode=='linear':
+            body['leverage']='1'
+            # SAFETY NET: attach an exchange-native stop loss so Bybit itself
+            # protects the position even if this server sleeps or crashes.
+            # The management loop still trails it tighter while running.
+            try:
+                sl_pct = float(_auto_creds.get('sl_pct', 3) or 3)
+                hard_sl_pct = max(sl_pct, 2.0)  # never tighter than 2%
+                if side == 'Buy':
+                    sl_price = price * (1 - hard_sl_pct / 100.0)
+                else:
+                    sl_price = price * (1 + hard_sl_pct / 100.0)
+                body['stopLoss'] = f'{sl_price:.8f}'.rstrip('0').rstrip('.')
+                body['slTriggerBy'] = 'MarkPrice'
+            except Exception as _sl_e:
+                print(f'  [AutoTrader] {symbol}: could not attach safety SL: {_sl_e}')
         r=_bybit_request('POST','/v5/order/create',body=body)
         if r and r.get('retCode')==0:
             actual_notional = qty * price
@@ -1827,6 +1845,38 @@ TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', '').strip()
 TELEGRAM_CHAT_ID   = os.environ.get('TELEGRAM_CHAT_ID', '').strip()
 TG_COOLDOWN_SECS   = int(os.environ.get('TELEGRAM_COOLDOWN_SECS', '3600'))  # 1h per symbol
 _tg_last_alert = {}
+
+# ── Alpaca news (served to the website; keys stay server-side) ────────
+ALPACA_NEWS_KEY    = os.environ.get('ALPACA_NEWS_KEY',    'PKGLG27L2PH36HXBM254IPGPZL')
+ALPACA_NEWS_SECRET = os.environ.get('ALPACA_NEWS_SECRET', 'Etu9sQkS6mTZ69hG1xW3ux8euTdQgt9CmoafpvM8j24w')
+_news_cache = {'ts': 0, 'data': None}
+
+def _fetch_alpaca_news(limit=10):
+    """Fetch latest news from Alpaca, cached for 5 minutes."""
+    now = time.time()
+    if _news_cache['data'] is not None and now - _news_cache['ts'] < 300:
+        return _news_cache['data']
+    try:
+        req = urllib.request.Request(
+            f'https://data.alpaca.markets/v1beta1/news?limit={int(limit)}&sort=desc',
+            headers={
+                'APCA-API-KEY-ID': ALPACA_NEWS_KEY,
+                'APCA-API-SECRET-KEY': ALPACA_NEWS_SECRET,
+            })
+        with urllib.request.urlopen(req, timeout=10, context=ssl_ctx) as r:
+            raw = json.loads(r.read())
+        items = [{
+            'headline':   n.get('headline', ''),
+            'source':     n.get('source', 'news'),
+            'url':        n.get('url', ''),
+            'created_at': n.get('created_at', ''),
+        } for n in raw.get('news', [])]
+        _news_cache['ts'] = now
+        _news_cache['data'] = {'news': items}
+        return _news_cache['data']
+    except Exception as e:
+        print(f'  [News] Alpaca fetch error: {e}')
+        return _news_cache['data'] or {'news': [], 'error': str(e)}
 
 def _telegram_enabled():
     return bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID)
