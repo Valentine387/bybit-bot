@@ -427,7 +427,7 @@ class BybitProxyHandler(BaseHTTPRequestHandler):
                 "min_confidence": _auto_creds['min_confidence'],
                 "auto_env_default": os.environ.get('AUTO_TRADING', 'false'),
                 "telegram_enabled": _telegram_enabled(),
-                "build":          "v3.2-demo-live",
+                "build":          "v3.3-signals-always",
                 "demo":           _auto_creds.get('demo', USE_DEMO),
             })
 
@@ -1871,8 +1871,8 @@ TG_COOLDOWN_SECS   = int(os.environ.get('TELEGRAM_COOLDOWN_SECS', '3600'))  # 1h
 _tg_last_alert = {}
 
 # ── Alpaca news (served to the website; keys stay server-side) ────────
-ALPACA_NEWS_KEY    = os.environ.get('ALPACA_NEWS_KEY',    'PKGLG27L2PH36HXBM254IPGPZL')
-ALPACA_NEWS_SECRET = os.environ.get('ALPACA_NEWS_SECRET', 'Etu9sQkS6mTZ69hG1xW3ux8euTdQgt9CmoafpvM8j24w')
+ALPACA_NEWS_KEY    = os.environ.get('ALPACA_NEWS_KEY',    'PKAJDQC5LZGYDHQ3S5IITANP5G')
+ALPACA_NEWS_SECRET = os.environ.get('ALPACA_NEWS_SECRET', '6AMdh68737pBN3izqfxFMfNoWkSt4YYquvmvDH6dRxUf')
 _news_cache = {'ts': 0, 'data': None}
 
 def _fetch_alpaca_news(limit=10):
@@ -1974,7 +1974,7 @@ def _auto_trading_loop():
     # Stagger start to not hammer API immediately
     time.sleep(30)
     print('  [AutoTrader] 🤖 Autonomous trading engine started')
-    print(f"  [AutoTrader] ⚙ CONFIG: AUTO_TRADING env={os.environ.get('AUTO_TRADING','<unset>')} | runtime auto_enabled={_auto_creds['auto_enabled']} | telegram={'ON' if _telegram_enabled() else 'OFF'} | build=v3.1-telegram")
+    print(f"  [AutoTrader] ⚙ CONFIG: AUTO_TRADING env={os.environ.get('AUTO_TRADING','<unset>')} | runtime auto_enabled={_auto_creds['auto_enabled']} | telegram={'ON' if _telegram_enabled() else 'OFF'} | build=v3.3-signals-always")
     scan_interval = int(os.environ.get('SCAN_INTERVAL_SECS', '300'))  # 5 min default
 
     while True:
@@ -2003,12 +2003,10 @@ def _auto_trading_loop():
                 positions=_get_positions() if (_auto_creds['api_key'] and _auto_creds['api_secret']) else []
             except Exception:
                 positions=[]
-            if len(positions)>=20:
+            # Position capacity only blocks TRADING — never signal alerts.
+            at_capacity = len(positions) >= 20
+            if at_capacity and not _telegram_enabled():
                 print(f'  [AutoTrader] Max 20 server positions reached ({len(positions)} open) — skipping scan')
-                time.sleep(scan_interval)
-                continue
-            if len(positions)>=20:
-                print(f'  [AutoTrader] Max 20 server positions reached ({len(positions)} open) — skipping')
                 time.sleep(scan_interval)
                 continue
 
@@ -2049,6 +2047,12 @@ def _auto_trading_loop():
             # Trading only happens when auto-trading is enabled
             if not _auto_creds['auto_enabled']:
                 print(f'  [AutoTrader] Signals-only mode — {len(strong)} strong signal(s) alerted, no trades placed')
+                time.sleep(scan_interval)
+                continue
+
+            # At position capacity: alerts sent above, but no new trades
+            if at_capacity:
+                print(f'  [AutoTrader] {len(strong)} signal(s) alerted — at max positions ({len(positions)}), no new trades')
                 time.sleep(scan_interval)
                 continue
 
