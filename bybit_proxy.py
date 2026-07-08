@@ -36,160 +36,6 @@ def _base(demo=None):
         demo = USE_DEMO
     return BYBIT_DEMO if demo else BYBIT_LIVE
 
-# ═══════════════════════════════════════════════════════
-# EXCHANGE ADAPTER LAYER — Phase 1: Binance USDT-M Futures
-# Same request/response contracts as the Bybit handlers, so the
-# frontend works unchanged. demo=true routes to Binance TESTNET.
-# ═══════════════════════════════════════════════════════
-BINANCE_LIVE = "https://fapi.binance.com"
-BINANCE_TEST = "https://testnet.binancefuture.com"
-_BN_INTERVALS = {'1':'1m','3':'3m','5':'5m','15':'15m','30':'30m','60':'1h',
-                 '120':'2h','240':'4h','360':'6h','720':'12h','D':'1d','W':'1w','M':'1M'}
-
-def _parse_exchange_param(path_qs):
-    try:
-        qs = urllib.parse.urlparse(path_qs).query
-        v = urllib.parse.parse_qs(qs).get('exchange', [None])[0]
-        return (v or 'bybit').lower()
-    except Exception:
-        return 'bybit'
-
-def _bn_base(demo=None):
-    if demo is None:
-        demo = getattr(_req_ctx, 'demo', None)
-    if demo is None:
-        demo = USE_DEMO
-    return BINANCE_TEST if demo else BINANCE_LIVE
-
-def _bn_request(method, path, params=None, key='', secret='', signed=True):
-    params = dict(params or {})
-    headers = {'X-MBX-APIKEY': key} if key else {}
-    if signed:
-        params['timestamp']  = int(time.time() * 1000)
-        params['recvWindow'] = 10000
-        qs  = urllib.parse.urlencode(params)
-        sig = hmac.new(secret.encode(), qs.encode(), hashlib.sha256).hexdigest()
-        qs  = qs + '&signature=' + sig
-    else:
-        qs = urllib.parse.urlencode(params)
-    url = _bn_base() + path + ('?' + qs if qs else '')
-    req = urllib.request.Request(url, method=method, headers=headers)
-    try:
-        with urllib.request.urlopen(req, timeout=15, context=ssl_ctx) as r:
-            return json.loads(r.read())
-    except urllib.error.HTTPError as e:
-        try:
-            return json.loads(e.read())
-        except Exception:
-            return {'code': e.code, 'msg': str(e)}
-
-def _bn_qty_round(symbol, qty, key, secret):
-    """Round qty down to the symbol's LOT_SIZE step."""
-    try:
-        info = _bn_request('GET', '/fapi/v1/exchangeInfo', {'symbol': symbol}, signed=False)
-        for s in info.get('symbols', []):
-            if s.get('symbol') == symbol:
-                for f in s.get('filters', []):
-                    if f.get('filterType') == 'LOT_SIZE':
-                        step = float(f.get('stepSize', '0.001'))
-                        if step > 0:
-                            qty = int(qty / step) * step
-                            return float(f'{qty:.10f}'.rstrip('0').rstrip('.') or 0)
-    except Exception as e:
-        print(f'  [Binance] lot-size lookup failed {symbol}: {e}')
-    return round(qty, 3)
-
-def bn_klines_payload(symbol, interval, limit):
-    bn_iv = _BN_INTERVALS.get(str(interval), '30m')
-    raw = _bn_request('GET', '/fapi/v1/klines',
-                      {'symbol': symbol, 'interval': bn_iv, 'limit': min(int(limit), 1000)},
-                      signed=False)
-    candles, volumes = [], []
-    if isinstance(raw, list):
-        for k in raw:
-            ts     = int(k[0]) // 1000
-            open_  = float(k[1]); high = float(k[2])
-            low    = float(k[3]); close = float(k[4]); vol = float(k[5])
-            candles.append({"time": ts, "open": open_, "high": high, "low": low, "close": close})
-            volumes.append({"time": ts, "value": vol,
-                            "color": "rgba(0,229,160,0.3)" if close >= open_ else "rgba(255,61,107,0.3)"})
-    return {"candles": candles, "volumes": volumes, "symbol": symbol, "interval": interval}
-
-def bn_account_payload(key, secret):
-    d = _bn_request('GET', '/fapi/v2/account', {}, key, secret)
-    if 'totalMarginBalance' not in d:
-        return {'error': d.get('msg', 'Binance auth failed'), 'code': d.get('code')}
-    equity = float(d.get('totalMarginBalance', 0))
-    avail  = float(d.get('availableBalance', 0))
-    return {
-        "equity":            equity,
-        "available_balance": avail,
-        "cash":              avail,
-        "buying_power":      avail,
-        "account_type":      "BINANCE-FUTURES" + (" (TESTNET)" if _bn_base().endswith('binancefuture.com') else ""),
-    }
-
-def bn_positions_payload(key, secret):
-    d = _bn_request('GET', '/fapi/v2/positionRisk', {}, key, secret)
-    positions = []
-    if isinstance(d, list):
-        for p in d:
-            amt = float(p.get('positionAmt', 0) or 0)
-            if amt == 0:
-                continue
-            size  = abs(amt)
-            entry = float(p.get('entryPrice', 0) or 0)
-            mark  = float(p.get('markPrice', 0) or 0)
-            unreal = float(p.get('unRealizedProfit', 0) or 0)
-            lev   = float(p.get('leverage', 1) or 1) or 1
-            cost  = entry * size / lev if lev > 0 else entry * size
-            positions.append({
-                "symbol":          p.get('symbol'),
-                "side":            'Buy' if amt > 0 else 'Sell',
-                "size":            size,
-                "qty":             size,
-                "avg_entry_price": entry,
-                "current_price":   mark,
-                "unrealized_pl":   unreal,
-                "unrealized_plpc": (unreal / cost) if cost > 0 else 0,
-                "cost_basis":      cost,
-                "leverage":        lev,
-                "category":        "linear",
-                "positionIdx":     0,
-            })
-    return positions
-
-def bn_order_payload(key, secret, body):
-    symbol = body.get('symbol')
-    side   = 'BUY' if str(body.get('side', 'Buy')).lower() == 'buy' else 'SELL'
-    qty    = float(body.get('qty', 0))
-    qty    = _bn_qty_round(symbol, qty, key, secret)
-    if qty <= 0:
-        return {'error': 'qty rounds to zero for this symbol'}
-    params = {'symbol': symbol, 'side': side, 'type': 'MARKET', 'quantity': qty}
-    if body.get('reduceOnly'):
-        params['reduceOnly'] = 'true'
-    d = _bn_request('POST', '/fapi/v1/order', params, key, secret)
-    if d.get('orderId'):
-        # Safety-net SL, mirroring the Bybit behavior
-        try:
-            sl_pct = max(float(_auto_creds.get('sl_pct', 3) or 3), 2.0)
-            mk = _bn_request('GET', '/fapi/v1/ticker/price', {'symbol': symbol}, signed=False)
-            px = float(mk.get('price', 0) or 0)
-            if px > 0:
-                sl_price = px * (1 - sl_pct/100.0) if side == 'BUY' else px * (1 + sl_pct/100.0)
-                _bn_request('POST', '/fapi/v1/order', {
-                    'symbol': symbol,
-                    'side': 'SELL' if side == 'BUY' else 'BUY',
-                    'type': 'STOP_MARKET',
-                    'stopPrice': round(sl_price, 6),
-                    'closePosition': 'true',
-                    'workingType': 'MARK_PRICE',
-                }, key, secret)
-        except Exception as e:
-            print(f'  [Binance] safety SL failed {symbol}: {e}')
-    return d
-
 def _parse_demo_param(path_qs):
     """Extract demo flag from a query string; None if absent."""
     try:
@@ -427,7 +273,6 @@ class BybitProxyHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         _req_ctx.demo = _parse_demo_param(self.path)
-        _req_ctx.exchange = _parse_exchange_param(self.path)
         parsed = urllib.parse.urlparse(self.path)
         params = urllib.parse.parse_qs(parsed.query)
         api_key    = params.get("key",    [""])[0]
@@ -451,9 +296,6 @@ class BybitProxyHandler(BaseHTTPRequestHandler):
         elif path == "/instrument":
             self.handle_instrument(params)
         elif path == "/order-history":
-            if getattr(_req_ctx, 'exchange', 'bybit') == 'binance':
-                self.send_json(200, {"orders": [], "pnl": {}})
-                return
             # Fetch closed order history from Bybit
             # Supports: ?hours=24&category=linear&limit=50
             api_key    = params.get("key",      [""])[0]
@@ -561,7 +403,6 @@ class BybitProxyHandler(BaseHTTPRequestHandler):
             if body.get('sl_pct'):       _auto_creds['sl_pct']       = float(body['sl_pct'])
             if body.get('min_confidence'): _auto_creds['min_confidence'] = float(body['min_confidence'])
             if 'demo' in body: _auto_creds['demo'] = bool(body['demo']) if not isinstance(body['demo'], str) else body['demo'].lower() == 'true'
-            if 'exchange' in body: _auto_creds['exchange'] = str(body['exchange']).lower()
             # auto_enabled: only update if explicitly included in request
             if 'auto_enabled' in body:
                 _auto_creds['auto_enabled'] = bool(body['auto_enabled'])
@@ -586,9 +427,18 @@ class BybitProxyHandler(BaseHTTPRequestHandler):
                 "min_confidence": _auto_creds['min_confidence'],
                 "auto_env_default": os.environ.get('AUTO_TRADING', 'false'),
                 "telegram_enabled": _telegram_enabled(),
-                "build":          "v4.0-multi-exchange",
+                "build":          "v3.6-stripe",
                 "demo":           _auto_creds.get('demo', USE_DEMO),
             })
+
+        elif path == "/check-subscription":
+            email = params.get("email", [""])[0]
+            if not STRIPE_SECRET_KEY:
+                self.send_json(200, {"active": False, "error": "stripe not configured yet"})
+            elif not email or "@" not in email:
+                self.send_json(400, {"active": False, "error": "valid email required"})
+            else:
+                self.send_json(200, _check_stripe_subscription(email))
 
         elif path == "/site-news":
             # Website news feed (server-side Alpaca keys, cached 5 min)
@@ -638,7 +488,6 @@ class BybitProxyHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         _req_ctx.demo = _parse_demo_param(self.path)
-        _req_ctx.exchange = _parse_exchange_param(self.path)
         parsed = urllib.parse.urlparse(self.path)
         length = int(self.headers.get("Content-Length", 0))
         body   = json.loads(self.rfile.read(length)) if length else {}
@@ -702,10 +551,6 @@ class BybitProxyHandler(BaseHTTPRequestHandler):
             self.send_json(500, {"error": str(e)})
 
     def handle_account(self, api_key, api_secret):
-        if getattr(_req_ctx, 'exchange', 'bybit') == 'binance':
-            r = bn_account_payload(api_key, api_secret)
-            self.send_json(200 if 'error' not in r else 401, r)
-            return
         print(f"\n--- BYBIT ACCOUNT (key={api_key[:8] if api_key else 'EMPTY'}...)")
         if not api_key or not api_secret:
             self.send_json(400, {"error": "API key and secret are required"})
@@ -756,12 +601,6 @@ class BybitProxyHandler(BaseHTTPRequestHandler):
             self.send_json(400, {"error": str(e)})
 
     def handle_positions(self, api_key, api_secret, category):
-        if getattr(_req_ctx, 'exchange', 'bybit') == 'binance':
-            try:
-                self.send_json(200, bn_positions_payload(api_key, api_secret))
-            except Exception as e:
-                self.send_json(500, {"error": str(e)})
-            return
         positions = []  # always initialise FIRST — prevents UnboundLocalError
         try:
             # Bybit /v5/position/list only supports linear and option — NOT spot
@@ -872,13 +711,6 @@ class BybitProxyHandler(BaseHTTPRequestHandler):
             self.send_json(200, {"ok": False, "msg": str(e)})  # non-fatal
 
     def handle_order(self, api_key, api_secret, body):
-        if getattr(_req_ctx, 'exchange', 'bybit') == 'binance':
-            try:
-                r = bn_order_payload(api_key, api_secret, body)
-                self.send_json(200 if 'error' not in r and not r.get('code') else 400, r)
-            except Exception as e:
-                self.send_json(500, {"error": str(e)})
-            return
         """Place spot or futures order"""
         category = body.get("category", "spot")
         symbol   = body.get("symbol", "")
@@ -993,15 +825,6 @@ class BybitProxyHandler(BaseHTTPRequestHandler):
             self.send_json(500, {"error": str(e)})
 
     def handle_kline(self, params):
-        if getattr(_req_ctx, 'exchange', 'bybit') == 'binance':
-            try:
-                symbol   = params.get("symbol",   ["BTCUSDT"])[0]
-                interval = params.get("interval", ["30"])[0]
-                limit    = params.get("limit",    ["200"])[0]
-                self.send_json(200, bn_klines_payload(symbol, interval, limit))
-            except Exception as e:
-                self.send_json(500, {"error": str(e)})
-            return
         """Fetch OHLCV candle data — uses PUBLIC Bybit endpoint, no auth needed"""
         symbol   = params.get('symbol',   ['BTCUSDT'])[0].upper()
         interval = params.get('interval', ['5'])[0]
@@ -1181,7 +1004,6 @@ _auto_creds = {
     'auto_enabled': os.environ.get('AUTO_TRADING', 'false').lower() == 'true',
     'min_confidence': float(os.environ.get('MIN_CONFIDENCE', '60')),
     'demo': os.environ.get('DEMO_MODE', 'true').lower() == 'true',
-    'exchange': 'bybit',
 }
 _open_positions = {}  # symbol -> position data
 _last_regime = 'UNKNOWN'
@@ -2090,6 +1912,59 @@ def _fetch_alpaca_news(limit=10):
         print(f'  [News] Alpaca fetch error: {e}')
         return _news_cache['data'] or {'news': [], 'error': str(e)}
 
+# ── Stripe subscription verification ──────────────────────────────────
+# Set in Render env: STRIPE_SECRET_KEY (an sk_live_... or restricted rk_ key)
+# The website asks /check-subscription?email=... and this server queries
+# Stripe directly. No database needed — Stripe is the source of truth.
+STRIPE_SECRET_KEY = os.environ.get('STRIPE_SECRET_KEY', '').strip()
+_stripe_cache = {}  # email -> (ts, result)
+
+def _stripe_get(path, params=None):
+    qs  = urllib.parse.urlencode(params or {})
+    url = 'https://api.stripe.com' + path + ('?' + qs if qs else '')
+    req = urllib.request.Request(url, headers={
+        'Authorization': 'Bearer ' + STRIPE_SECRET_KEY})
+    with urllib.request.urlopen(req, timeout=15, context=ssl_ctx) as r:
+        return json.loads(r.read())
+
+def _check_stripe_subscription(email):
+    """Returns {active, plan, current_period_end} for the email, cached 60s."""
+    email = (email or '').strip().lower()
+    now = time.time()
+    cached = _stripe_cache.get(email)
+    if cached and now - cached[0] < 60:
+        return cached[1]
+    result = {'active': False}
+    try:
+        customers = _stripe_get('/v1/customers', {'email': email, 'limit': 5}).get('data', [])
+        for cust in customers:
+            subs = _stripe_get('/v1/subscriptions', {
+                'customer': cust['id'], 'status': 'active', 'limit': 5}).get('data', [])
+            if not subs:
+                subs = _stripe_get('/v1/subscriptions', {
+                    'customer': cust['id'], 'status': 'trialing', 'limit': 5}).get('data', [])
+            if subs:
+                sub   = subs[0]
+                item  = (sub.get('items', {}).get('data') or [{}])[0]
+                price = item.get('price', {}) or {}
+                nick  = (price.get('nickname') or '').lower()
+                plan  = 'pro'
+                for p in ('basic', 'pro', 'max'):
+                    if p in nick:
+                        plan = p
+                        break
+                result = {
+                    'active': True,
+                    'plan': plan,
+                    'current_period_end': sub.get('current_period_end', 0),
+                }
+                break
+    except Exception as e:
+        print(f'  [Stripe] check error for {email}: {e}')
+        result = {'active': False, 'error': 'stripe check failed'}
+    _stripe_cache[email] = (now, result)
+    return result
+
 def _telegram_enabled():
     return bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID)
 
@@ -2180,11 +2055,6 @@ def _auto_trading_loop():
     while True:
         try:
             _req_ctx.demo = _auto_creds.get('demo')  # route this cycle demo/live
-            if _auto_creds.get('exchange', 'bybit') != 'bybit':
-                # Server-side automation is Bybit-only in this phase;
-                # Binance runs via browser trading (with exchange-native SLs).
-                time.sleep(60)
-                continue
             # Scan runs if auto-trading is ON *or* Telegram alerts are configured
             if not _auto_creds['auto_enabled'] and not _telegram_enabled():
                 time.sleep(30)
