@@ -427,7 +427,7 @@ class BybitProxyHandler(BaseHTTPRequestHandler):
                 "min_confidence": _auto_creds['min_confidence'],
                 "auto_env_default": os.environ.get('AUTO_TRADING', 'false'),
                 "telegram_enabled": _telegram_enabled(),
-                "build":          "v3.3-signals-always",
+                "build":          "v3.4-tiered-alerts",
                 "demo":           _auto_creds.get('demo', USE_DEMO),
             })
 
@@ -1944,30 +1944,42 @@ def _telegram_send(text):
         print(f'  [Telegram] send failed: {detail}')
     return ok
 
-def _telegram_signal_alert(sig, min_conf):
-    """Push one strong signal to the channel, respecting per-symbol cooldown."""
+TG_WATCH_ALERTS = os.environ.get('TELEGRAM_WATCH_ALERTS', 'true').lower() == 'true'
+TG_WATCH_MIN    = float(os.environ.get('TELEGRAM_WATCH_MIN', '65'))
+
+def _telegram_signal_alert(sig, min_conf, tier='STRONG'):
+    """Push a signal to the channel. tier: STRONG (auto-traded) or WATCH (heads-up).
+    Returns 'sent', 'cooldown', or 'failed'."""
     sym = sig['symbol']
     now = time.time()
     if now - _tg_last_alert.get(sym, 0) < TG_COOLDOWN_SECS:
-        return
-    _tg_last_alert[sym] = now
+        return 'cooldown'
     side   = 'LONG 🟢' if sig['direction'] == 1 else 'SHORT 🔴'
     arrow  = '▲' if sig['direction'] == 1 else '▼'
     coin   = sym.replace('USDT', '')
     pat    = sig.get('pattern', 'None')
     pat_ln = f"\n🕯 Pattern: <b>{pat}</b>" if pat and pat != 'None' else ''
+    if tier == 'STRONG':
+        head = f"⚡ <b>STRONG SIGNAL</b> — {arrow} <b>{coin}</b>"
+        foot = "🤖 AlgoRhythm v4 · auto-trade tier · not financial advice"
+    else:
+        head = f"👀 <b>WATCH</b> — {arrow} <b>{coin}</b>"
+        foot = "🤖 AlgoRhythm v4 · watchlist tier (not auto-traded) · not financial advice"
     msg = (
-        f"⚡ <b>STRONG SIGNAL</b> — {arrow} <b>{coin}</b>\n"
+        f"{head}\n"
         f"\n"
         f"📊 Direction: <b>{side}</b>\n"
-        f"🎯 Confidence: <b>{sig['score']:.0f}%</b> (threshold {min_conf:.0f}%)\n"
+        f"🎯 Confidence: <b>{sig['score']:.0f}%</b>\n"
         f"💵 Price: <b>${sig['price']}</b>\n"
         f"📈 ADX: {sig.get('adx', 0):.0f} · RSI: {sig.get('rsi', 50):.0f}{pat_ln}\n"
         f"\n"
-        f"🤖 AlgoRhythm v4 · not financial advice"
+        f"{foot}"
     )
     if _telegram_send(msg):
-        print(f'  [Telegram] 📨 Signal alert sent: {sym} {side} {sig["score"]:.0f}%')
+        _tg_last_alert[sym] = now
+        print(f'  [Telegram] 📨 {tier} alert sent: {sym} {side} {sig["score"]:.0f}%')
+        return 'sent'
+    return 'failed' 
 
 def _auto_trading_loop():
     """Main autonomous trading loop — runs every 5 minutes on Render"""
@@ -1975,7 +1987,7 @@ def _auto_trading_loop():
     # Stagger start to not hammer API immediately
     time.sleep(30)
     print('  [AutoTrader] 🤖 Autonomous trading engine started')
-    print(f"  [AutoTrader] ⚙ CONFIG: AUTO_TRADING env={os.environ.get('AUTO_TRADING','<unset>')} | runtime auto_enabled={_auto_creds['auto_enabled']} | telegram={'ON' if _telegram_enabled() else 'OFF'} | build=v3.3-signals-always")
+    print(f"  [AutoTrader] ⚙ CONFIG: AUTO_TRADING env={os.environ.get('AUTO_TRADING','<unset>')} | runtime auto_enabled={_auto_creds['auto_enabled']} | telegram={'ON' if _telegram_enabled() else 'OFF'} | build=v3.4-tiered-alerts")
     scan_interval = int(os.environ.get('SCAN_INTERVAL_SECS', '300'))  # 5 min default
 
     while True:
@@ -2041,9 +2053,20 @@ def _auto_trading_loop():
                 time.sleep(scan_interval)
                 continue
 
-            # 📨 Telegram: broadcast strong signals to the channel
-            for sig in strong[:5]:
-                _telegram_signal_alert(sig, min_conf)
+            # 📨 Telegram: broadcast signals to the channel (both tiers)
+            if _telegram_enabled():
+                tg_sent = tg_cool = 0
+                for sig in strong[:5]:
+                    res = _telegram_signal_alert(sig, min_conf, 'STRONG')
+                    tg_sent += (res == 'sent'); tg_cool += (res == 'cooldown')
+                watch_sigs = []
+                if TG_WATCH_ALERTS:
+                    watch_sigs = [s for s in signals
+                                  if TG_WATCH_MIN <= s['score'] < min_conf][:3]
+                    for sig in watch_sigs:
+                        res = _telegram_signal_alert(sig, min_conf, 'WATCH')
+                        tg_sent += (res == 'sent'); tg_cool += (res == 'cooldown')
+                print(f'  [Telegram] scan summary: {len(strong)} strong · {len(watch_sigs)} watch · {tg_sent} sent · {tg_cool} on cooldown')
 
             # Trading only happens when auto-trading is enabled
             if not _auto_creds['auto_enabled']:
