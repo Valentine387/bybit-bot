@@ -427,7 +427,7 @@ class BybitProxyHandler(BaseHTTPRequestHandler):
                 "min_confidence": _auto_creds['min_confidence'],
                 "auto_env_default": os.environ.get('AUTO_TRADING', 'false'),
                 "telegram_enabled": _telegram_enabled(),
-                "build":          "v3.6-stripe",
+                "build":          "v3.7-scanlist-2x",
                 "demo":           _auto_creds.get('demo', USE_DEMO),
             })
 
@@ -1635,7 +1635,16 @@ def _place_order(symbol, side, size, price, category=None):
             return False
         body={'category':mode,'symbol':symbol,'side':side,'orderType':'Market','qty':str(qty)}
         if mode=='linear':
-            body['leverage']='1'
+            # Set 2x leverage on the symbol before ordering (env: LEVERAGE)
+            try:
+                _lev = os.environ.get('LEVERAGE', '2')
+                lr = _bybit_request('POST', '/v5/position/set-leverage', body={
+                    'category': mode, 'symbol': symbol,
+                    'buyLeverage': _lev, 'sellLeverage': _lev})
+                if lr and lr.get('retCode') not in (0, 110043):  # 110043 = already set
+                    print(f'  [AutoTrader] {symbol}: set-leverage note: {lr.get("retMsg")}')
+            except Exception as _le:
+                print(f'  [AutoTrader] {symbol}: set-leverage error: {_le}')
             # SAFETY NET: attach an exchange-native stop loss so Bybit itself
             # protects the position even if this server sleeps or crashes.
             # The management loop still trails it tighter while running.
@@ -2042,6 +2051,22 @@ def _telegram_signal_alert(sig, min_conf, tier='STRONG'):
         print(f'  [Telegram] 📨 {tier} alert sent: {sym} {side} {sig["score"]:.0f}%')
         return 'sent'
     return 'failed' 
+
+# ═══ SCAN LIST — refined set (curated: majors + quality alts, memes removed) ═══
+SCAN_SYMBOLS = [
+    'BTCUSDT','ETHUSDT','HYPEUSDT','XRPUSDT','HUSDT',
+    'MNTUSDT','BILLUSDT','VIRTUALUSDT',
+    'NEARUSDT','TONUSDT','MONUSDT',
+    'ASTERUSDT','AVAXUSDT','ONDOUSDT','ENAUSDT','VVVUSDT',
+    'XPLUSDT','IPUSDT','LINKUSDT','CCUSDT','AAVEUSDT','BSBUSDT',
+    'XLMUSDT','TRXUSDT','PEPEUSDT','SHIBUSDT',
+    'DOTUSDT','UNIUSDT','APTUSDT','ARBUSDT','OPUSDT','FILUSDT','ATOMUSDT','INJUSDT','FETUSDT','RENDERUSDT',
+    'PENDLEUSDT','IMXUSDT','THETAUSDT',
+    'GALAUSDT','ALGOUSDT','VETUSDT','HBARUSDT','XMRUSDT','EOSUSDT','BCHUSDT','ETCUSDT','KASUSDT',
+    'STXUSDT','FTMUSDT','MANAUSDT','MKRUSDT','LDOUSDT',
+    'COMPUSDT','GMXUSDT','DYDXUSDT','RUNEUSDT','KSMUSDT',
+]
+SPOT_SCAN_SYMBOLS = ['ETHBTC', 'BBSOLUSDT']
 
 def _auto_trading_loop():
     """Main autonomous trading loop — runs every 5 minutes on Render"""
