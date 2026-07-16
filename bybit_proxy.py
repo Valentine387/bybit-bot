@@ -427,7 +427,7 @@ class BybitProxyHandler(BaseHTTPRequestHandler):
                 "min_confidence": _auto_creds['min_confidence'],
                 "auto_env_default": os.environ.get('AUTO_TRADING', 'false'),
                 "telegram_enabled": _telegram_enabled(),
-                "build":          "v3.7-scanlist-2x",
+                "build":          "v3.8-promo",
                 "demo":           _auto_creds.get('demo', USE_DEMO),
             })
 
@@ -452,7 +452,7 @@ class BybitProxyHandler(BaseHTTPRequestHandler):
                 self.send_json(200, {"ok": False, "error": "TELEGRAM_CHAT_ID env var is not set on Render"})
             else:
                 ok, detail = _telegram_send_detailed(
-                    "\u2705 <b>Test message</b> \u2014 your TradeAlgorythm server can post to this channel. "
+                    "\u2705 <b>Test message</b> \u2014 your JarovaTrade server can post to this channel. "
                     "Strong signals (60%+) will appear here automatically.")
                 self.send_json(200, {
                     "ok": ok,
@@ -2018,6 +2018,56 @@ def _telegram_send(text):
 TG_WATCH_ALERTS = os.environ.get('TELEGRAM_WATCH_ALERTS', 'true').lower() == 'true'
 TG_WATCH_MIN    = float(os.environ.get('TELEGRAM_WATCH_MIN', '65'))
 
+TG_PROMO_INTERVAL = int(os.environ.get('TELEGRAM_PROMO_INTERVAL_SECS', '600'))  # 10 min
+_tg_last_promo = [0.0]
+
+PROMO_CAPTION = (
+    "🦁 <b>JarovaTrade — AI Crypto Trading Bot</b>\n"
+    "\n"
+    "Jarova is an AI-powered crypto trading bot designed to automate your trading "
+    "with speed, precision, and discipline. It continuously monitors the market, "
+    "identifies trading opportunities, and executes your strategy without emotional "
+    "decision-making. Whether you're a beginner or an experienced trader, Jarova "
+    "helps you stay connected to the market 24/7 so you never miss an opportunity.\n"
+    "\n"
+    "<b>Why trade with JarovaTrade?</b>\n"
+    "✅ Scans 60 coins every 5 minutes\n"
+    "✅ Trades long &amp; short — profits both ways\n"
+    "✅ Auto stop-loss, breakeven &amp; trailing profit protection\n"
+    "✅ Non-custodial — your funds stay on your exchange\n"
+    "\n"
+    "🎁 <b>Try it for 1 day — just €1:</b>\n"
+    "https://buy.stripe.com/28E6oHbCF3gC8idh2aeAg09\n"
+    "\n"
+    "🚀 Start now: https://jarova.netlify.app/\n"
+    "𝕏 Follow us: https://x.com/jarovatrade — @JarovaTrade"
+)
+
+def _telegram_send_promo():
+    """Send the bot promo card (logo + caption) — throttled to TG_PROMO_INTERVAL."""
+    now = time.time()
+    if now - _tg_last_promo[0] < TG_PROMO_INTERVAL:
+        return False
+    try:
+        url = f'https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto'
+        payload = json.dumps({
+            'chat_id': TELEGRAM_CHAT_ID,
+            'photo': 'https://jarova.netlify.app/icon-512.png',
+            'caption': PROMO_CAPTION,
+            'parse_mode': 'HTML',
+        }).encode()
+        req = urllib.request.Request(url, data=payload,
+                                     headers={'Content-Type': 'application/json'})
+        with urllib.request.urlopen(req, timeout=15, context=ssl_ctx) as r:
+            ok = json.loads(r.read()).get('ok', False)
+        if ok:
+            _tg_last_promo[0] = now
+            print('  [Telegram] 📣 Promo card sent')
+        return ok
+    except Exception as e:
+        print(f'  [Telegram] promo error: {e}')
+        return False
+
 def _telegram_signal_alert(sig, min_conf, tier='STRONG'):
     """Push a signal to the channel. tier: STRONG (auto-traded) or WATCH (heads-up).
     Returns 'sent', 'cooldown', or 'failed'."""
@@ -2032,10 +2082,10 @@ def _telegram_signal_alert(sig, min_conf, tier='STRONG'):
     pat_ln = f"\n🕯 Pattern: <b>{pat}</b>" if pat and pat != 'None' else ''
     if tier == 'STRONG':
         head = f"⚡ <b>STRONG SIGNAL</b> — {arrow} <b>{coin}</b>"
-        foot = "🤖 AlgoRhythm v4 · auto-trade tier · not financial advice"
+        foot = "🦁 JarovaTrade · auto-trade tier · not financial advice"
     else:
         head = f"👀 <b>WATCH</b> — {arrow} <b>{coin}</b>"
-        foot = "🤖 AlgoRhythm v4 · watchlist tier (not auto-traded) · not financial advice"
+        foot = "🦁 JarovaTrade · watchlist tier (not auto-traded) · not financial advice"
     msg = (
         f"{head}\n"
         f"\n"
@@ -2154,6 +2204,8 @@ def _auto_trading_loop():
                         res = _telegram_signal_alert(sig, min_conf, 'WATCH')
                         tg_sent += (res == 'sent'); tg_cool += (res == 'cooldown')
                 print(f'  [Telegram] scan summary: {len(strong)} strong · {len(watch_sigs)} watch · {tg_sent} sent · {tg_cool} on cooldown')
+                if tg_sent > 0:
+                    _telegram_send_promo()  # bot promo follows signals, max 1 per 10 min
 
             # Trading only happens when auto-trading is enabled
             if not _auto_creds['auto_enabled']:
