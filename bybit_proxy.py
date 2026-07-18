@@ -427,7 +427,7 @@ class BybitProxyHandler(BaseHTTPRequestHandler):
                 "min_confidence": _auto_creds['min_confidence'],
                 "auto_env_default": os.environ.get('AUTO_TRADING', 'false'),
                 "telegram_enabled": _telegram_enabled(),
-                "build":          "v3.9-multinews",
+                "build":          "v4.0-throttle",
                 "demo":           _auto_creds.get('demo', USE_DEMO),
             })
 
@@ -2011,6 +2011,24 @@ def _telegram_send(text):
 
 TG_WATCH_ALERTS = os.environ.get('TELEGRAM_WATCH_ALERTS', 'true').lower() == 'true'
 TG_WATCH_MIN    = float(os.environ.get('TELEGRAM_WATCH_MIN', '65'))
+TG_MAX_PER_DAY  = int(os.environ.get('TELEGRAM_MAX_SIGNALS_PER_DAY', '10'))
+TG_SIGNAL_GAP   = int(os.environ.get('TELEGRAM_SIGNAL_GAP_SECS', '7200'))  # 2h between signals
+_tg_day_count   = {'day': '', 'count': 0, 'last_sent': 0.0}
+
+def _tg_signal_allowed():
+    today = time.strftime('%Y-%m-%d', time.gmtime())
+    if _tg_day_count['day'] != today:
+        _tg_day_count['day'] = today
+        _tg_day_count['count'] = 0
+    if _tg_day_count['count'] >= TG_MAX_PER_DAY:
+        return False
+    if time.time() - _tg_day_count['last_sent'] < TG_SIGNAL_GAP:
+        return False
+    return True
+
+def _tg_signal_mark_sent():
+    _tg_day_count['count'] += 1
+    _tg_day_count['last_sent'] = time.time()
 
 TG_PROMO_INTERVAL = int(os.environ.get('TELEGRAM_PROMO_INTERVAL_SECS', '600'))  # 10 min
 _tg_last_promo = [0.0]
@@ -2029,9 +2047,6 @@ PROMO_CAPTION = (
     "✅ Trades long &amp; short — profits both ways\n"
     "✅ Auto stop-loss, breakeven &amp; trailing profit protection\n"
     "✅ Non-custodial — your funds stay on your exchange\n"
-    "\n"
-    "🎁 <b>Try it for 1 day — just €1:</b>\n"
-    "https://buy.stripe.com/28E6oHbCF3gC8idh2aeAg09\n"
     "\n"
     "🚀 Start now: https://jarova.netlify.app/\n"
     "𝕏 Follow us: https://x.com/jarovatrade — @JarovaTrade"
@@ -2067,6 +2082,8 @@ def _telegram_signal_alert(sig, min_conf, tier='STRONG'):
     Returns 'sent', 'cooldown', or 'failed'."""
     sym = sig['symbol']
     now = time.time()
+    if not _tg_signal_allowed():
+        return 'cooldown'  # daily cap reached or within the 2h gap
     if now - _tg_last_alert.get(sym, 0) < TG_COOLDOWN_SECS:
         return 'cooldown'
     side   = 'LONG 🟢' if sig['direction'] == 1 else 'SHORT 🔴'
@@ -2092,7 +2109,8 @@ def _telegram_signal_alert(sig, min_conf, tier='STRONG'):
     )
     if _telegram_send(msg):
         _tg_last_alert[sym] = now
-        print(f'  [Telegram] 📨 {tier} alert sent: {sym} {side} {sig["score"]:.0f}%')
+        _tg_signal_mark_sent()
+        print(f'  [Telegram] 📨 {tier} alert sent: {sym} {side} {sig["score"]:.0f}% ({_tg_day_count["count"]}/{TG_MAX_PER_DAY} today)')
         return 'sent'
     return 'failed' 
 
