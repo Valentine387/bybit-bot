@@ -427,7 +427,7 @@ class BybitProxyHandler(BaseHTTPRequestHandler):
                 "min_confidence": _auto_creds['min_confidence'],
                 "auto_env_default": os.environ.get('AUTO_TRADING', 'false'),
                 "telegram_enabled": _telegram_enabled(),
-                "build":          "v3.8-promo",
+                "build":          "v3.9-multinews",
                 "demo":           _auto_creds.get('demo', USE_DEMO),
             })
 
@@ -442,7 +442,7 @@ class BybitProxyHandler(BaseHTTPRequestHandler):
 
         elif path == "/site-news":
             # Website news feed (server-side Alpaca keys, cached 5 min)
-            self.send_json(200, _fetch_alpaca_news(10))
+            self.send_json(200, _fetch_alpaca_news(12))
 
         elif path == "/telegram-test":
             # Diagnostic: verify Telegram config end-to-end from any browser
@@ -1895,84 +1895,78 @@ ALPACA_NEWS_SECRET = os.environ.get('ALPACA_NEWS_SECRET', '6AMdh68737pBN3izqfxFM
 _news_cache = {'ts': 0, 'data': None}
 
 def _fetch_alpaca_news(limit=10):
-    """Fetch latest news from Alpaca, cached for 5 minutes."""
+    """Aggregated CRYPTO news, cached 5 min.
+    Primary: CryptoCompare (aggregates CoinDesk, Cointelegraph, Decrypt and
+    more — crypto-only, no API key needed).
+    Secondary: Alpaca/Benzinga filtered to crypto symbols. Merged by recency."""
     now = time.time()
     if _news_cache['data'] is not None and now - _news_cache['ts'] < 300:
         return _news_cache['data']
+    items = []
+
+    # Source 1: CryptoCompare aggregate (many outlets, crypto-only)
     try:
         req = urllib.request.Request(
-            f'https://data.alpaca.markets/v1beta1/news?limit={int(limit)}&sort=desc',
+            'https://min-api.cryptocompare.com/data/v2/news/?lang=EN',
+            headers={'User-Agent': 'JarovaTrade/1.0'})
+        with urllib.request.urlopen(req, timeout=10, context=ssl_ctx) as r:
+            raw = json.loads(r.read())
+        for n in raw.get('Data', [])[:14]:
+            ts = int(n.get('published_on', 0))
+            items.append({
+                'headline':   n.get('title', ''),
+                'source':     (n.get('source_info', {}) or {}).get('name', n.get('source', 'crypto news')),
+                'url':        n.get('url', ''),
+                'created_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(ts)) if ts else '',
+                '_ts':        ts,
+            })
+    except Exception as e:
+        print(f'  [News] CryptoCompare error: {e}')
+
+    # Source 2: Alpaca/Benzinga — crypto symbols only
+    try:
+        req = urllib.request.Request(
+            'https://data.alpaca.markets/v1beta1/news?limit=8&sort=desc'
+            '&symbols=BTCUSD,ETHUSD,SOLUSD,XRPUSD,DOGEUSD',
             headers={
                 'APCA-API-KEY-ID': ALPACA_NEWS_KEY,
                 'APCA-API-SECRET-KEY': ALPACA_NEWS_SECRET,
             })
         with urllib.request.urlopen(req, timeout=10, context=ssl_ctx) as r:
             raw = json.loads(r.read())
-        items = [{
-            'headline':   n.get('headline', ''),
-            'source':     n.get('source', 'news'),
-            'url':        n.get('url', ''),
-            'created_at': n.get('created_at', ''),
-        } for n in raw.get('news', [])]
+        import datetime as _dt
+        for n in raw.get('news', []):
+            created = n.get('created_at', '')
+            try:
+                ts = int(_dt.datetime.fromisoformat(created.replace('Z', '+00:00')).timestamp())
+            except Exception:
+                ts = 0
+            items.append({
+                'headline':   n.get('headline', ''),
+                'source':     n.get('source', 'benzinga'),
+                'url':        n.get('url', ''),
+                'created_at': created,
+                '_ts':        ts,
+            })
+    except Exception as e:
+        print(f'  [News] Alpaca error: {e}')
+
+    items.sort(key=lambda x: x.get('_ts', 0), reverse=True)
+    seen, merged = set(), []
+    for n in items:
+        key = (n['headline'] or '')[:60].lower()
+        if key and key not in seen:
+            seen.add(key)
+            n.pop('_ts', None)
+            merged.append(n)
+        if len(merged) >= int(limit):
+            break
+
+    if merged:
         _news_cache['ts'] = now
-        _news_cache['data'] = {'news': items}
+        _news_cache['data'] = {'news': merged}
         return _news_cache['data']
-    except Exception as e:
-        print(f'  [News] Alpaca fetch error: {e}')
-        return _news_cache['data'] or {'news': [], 'error': str(e)}
-
-# ── Stripe subscription verification ──────────────────────────────────
-# Set in Render env: STRIPE_SECRET_KEY (an sk_live_... or restricted rk_ key)
-# The website asks /check-subscription?email=... and this server queries
-# Stripe directly. No database needed — Stripe is the source of truth.
-STRIPE_SECRET_KEY = os.environ.get('STRIPE_SECRET_KEY', '').strip()
-_stripe_cache = {}  # email -> (ts, result)
-
-def _stripe_get(path, params=None):
-    qs  = urllib.parse.urlencode(params or {})
-    url = 'https://api.stripe.com' + path + ('?' + qs if qs else '')
-    req = urllib.request.Request(url, headers={
-        'Authorization': 'Bearer ' + STRIPE_SECRET_KEY})
-    with urllib.request.urlopen(req, timeout=15, context=ssl_ctx) as r:
-        return json.loads(r.read())
-
-def _check_stripe_subscription(email):
-    """Returns {active, plan, current_period_end} for the email, cached 60s."""
-    email = (email or '').strip().lower()
-    now = time.time()
-    cached = _stripe_cache.get(email)
-    if cached and now - cached[0] < 60:
-        return cached[1]
-    result = {'active': False}
-    try:
-        customers = _stripe_get('/v1/customers', {'email': email, 'limit': 5}).get('data', [])
-        for cust in customers:
-            subs = _stripe_get('/v1/subscriptions', {
-                'customer': cust['id'], 'status': 'active', 'limit': 5}).get('data', [])
-            if not subs:
-                subs = _stripe_get('/v1/subscriptions', {
-                    'customer': cust['id'], 'status': 'trialing', 'limit': 5}).get('data', [])
-            if subs:
-                sub   = subs[0]
-                item  = (sub.get('items', {}).get('data') or [{}])[0]
-                price = item.get('price', {}) or {}
-                nick  = (price.get('nickname') or '').lower()
-                plan  = 'pro'
-                for p in ('basic', 'pro', 'max'):
-                    if p in nick:
-                        plan = p
-                        break
-                result = {
-                    'active': True,
-                    'plan': plan,
-                    'current_period_end': sub.get('current_period_end', 0),
-                }
-                break
-    except Exception as e:
-        print(f'  [Stripe] check error for {email}: {e}')
-        result = {'active': False, 'error': 'stripe check failed'}
-    _stripe_cache[email] = (now, result)
-    return result
+    return _news_cache['data'] or {'news': [], 'error': 'all news sources unavailable'}
 
 def _telegram_enabled():
     return bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID)
