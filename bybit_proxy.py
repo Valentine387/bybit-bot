@@ -427,7 +427,7 @@ class BybitProxyHandler(BaseHTTPRequestHandler):
                 "min_confidence": _auto_creds['min_confidence'],
                 "auto_env_default": os.environ.get('AUTO_TRADING', 'false'),
                 "telegram_enabled": _telegram_enabled(),
-                "build":          "v4.1-chatrelay",
+                "build":          "v4.2-livechat",
                 "demo":           _auto_creds.get('demo', USE_DEMO),
             })
 
@@ -439,6 +439,10 @@ class BybitProxyHandler(BaseHTTPRequestHandler):
                 self.send_json(400, {"active": False, "error": "valid email required"})
             else:
                 self.send_json(200, _check_stripe_subscription(email))
+
+        elif path == "/chat-replies":
+            sid = params.get("sid", [""])[0][:12]
+            self.send_json(200, {"replies": _chat_pop_replies(sid) if sid else []})
 
         elif path == "/site-news":
             # Website news feed (server-side Alpaca keys, cached 5 min)
@@ -502,11 +506,13 @@ class BybitProxyHandler(BaseHTTPRequestHandler):
             try:
                 msg  = str(body.get('m', ''))[:500].strip()
                 page = str(body.get('p', ''))[:60]
+                sid  = str(body.get('sid', ''))[:12]
                 admin_id = os.environ.get('TELEGRAM_ADMIN_CHAT_ID', '').strip()
                 if msg and admin_id and TELEGRAM_BOT_TOKEN:
+                    tag = f' [#{sid}]' if sid else ''
                     payload = json.dumps({
                         'chat_id': admin_id,
-                        'text': f'💬 Website chat ({page or "site"}):\n\n{msg}',
+                        'text': f'💬 Website chat{tag} ({page or "site"}):\n\n{msg}',
                     }).encode()
                     req = urllib.request.Request(
                         f'https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage',
@@ -1987,6 +1993,80 @@ def _fetch_alpaca_news(limit=10):
         _news_cache['data'] = {'news': merged}
         return _news_cache['data']
     return _news_cache['data'] or {'news': [], 'error': 'all news sources unavailable'}
+
+# ── Two-way website live chat ─────────────────────────────────────────
+# Each visitor gets a session tag [#abc123]. Admin replies in Telegram by
+# swiping/replying on a visitor's message; the reply routes back to that
+# visitor's chat window on the website (polled via /chat-replies).
+_chat_replies = {}   # sid -> list of (ts, text)
+_chat_lock = threading.Lock()
+_TG_HINT_TS = [0.0]
+
+def _chat_store_reply(sid, text):
+    with _chat_lock:
+        _chat_replies.setdefault(sid, []).append((time.time(), text))
+        # prune sessions older than 2h
+        cutoff = time.time() - 7200
+        for k in list(_chat_replies.keys()):
+            _chat_replies[k] = [(t, x) for (t, x) in _chat_replies[k] if t > cutoff]
+            if not _chat_replies[k]:
+                del _chat_replies[k]
+
+def _chat_pop_replies(sid):
+    with _chat_lock:
+        items = _chat_replies.pop(sid, [])
+    return [x for (_, x) in items]
+
+def _tg_updates_loop():
+    """Poll Telegram for the admin's replies and route them to visitors."""
+    admin_id = os.environ.get('TELEGRAM_ADMIN_CHAT_ID', '').strip()
+    if not (admin_id and TELEGRAM_BOT_TOKEN):
+        return
+    import re as _re
+    offset = 0
+    # skip any backlog on boot
+    try:
+        req = urllib.request.Request(
+            f'https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates?timeout=0')
+        with urllib.request.urlopen(req, timeout=10, context=ssl_ctx) as r:
+            data = json.loads(r.read())
+        for u in data.get('result', []):
+            offset = max(offset, u.get('update_id', 0) + 1)
+    except Exception:
+        pass
+    print('  [LiveChat] Telegram reply router active')
+    while True:
+        try:
+            req = urllib.request.Request(
+                f'https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates?timeout=20&offset={offset}')
+            with urllib.request.urlopen(req, timeout=30, context=ssl_ctx) as r:
+                data = json.loads(r.read())
+            for u in data.get('result', []):
+                offset = max(offset, u.get('update_id', 0) + 1)
+                msg = u.get('message') or {}
+                if str((msg.get('chat') or {}).get('id', '')) != admin_id:
+                    continue
+                text = msg.get('text', '')
+                reply_to = (msg.get('reply_to_message') or {}).get('text', '')
+                m = _re.search(r'\[#([a-z0-9]{4,12})\]', reply_to or '')
+                if m and text:
+                    _chat_store_reply(m.group(1), text[:600])
+                    print(f'  [LiveChat] reply routed to #{m.group(1)}')
+                elif text and not reply_to:
+                    # gentle usage hint, max once per 10 min
+                    if time.time() - _TG_HINT_TS[0] > 600:
+                        _TG_HINT_TS[0] = time.time()
+                        payload = json.dumps({'chat_id': admin_id,
+                            'text': 'ℹ️ To answer a website visitor, swipe/reply on their specific "Website chat" message — your reply will appear in their chat window.'}).encode()
+                        hint = urllib.request.Request(
+                            f'https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage',
+                            data=payload, headers={'Content-Type': 'application/json'})
+                        urllib.request.urlopen(hint, timeout=8, context=ssl_ctx).read()
+        except Exception as e:
+            print(f'  [LiveChat] poll error: {e}')
+            time.sleep(5)
+
+threading.Thread(target=_tg_updates_loop, daemon=True).start()
 
 def _telegram_enabled():
     return bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID)
