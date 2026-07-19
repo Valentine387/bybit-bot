@@ -427,7 +427,7 @@ class BybitProxyHandler(BaseHTTPRequestHandler):
                 "min_confidence": _auto_creds['min_confidence'],
                 "auto_env_default": os.environ.get('AUTO_TRADING', 'false'),
                 "telegram_enabled": _telegram_enabled(),
-                "build":          "v4.0-throttle",
+                "build":          "v4.1-chatrelay",
                 "demo":           _auto_creds.get('demo', USE_DEMO),
             })
 
@@ -496,6 +496,26 @@ class BybitProxyHandler(BaseHTTPRequestHandler):
         api_secret = params.get("secret", [""])[0] or body.get("secret", "")
 
         path = parsed.path
+
+        if path == "/chat-relay":
+            # Website live-chat → admin's personal Telegram (set TELEGRAM_ADMIN_CHAT_ID)
+            try:
+                msg  = str(body.get('m', ''))[:500].strip()
+                page = str(body.get('p', ''))[:60]
+                admin_id = os.environ.get('TELEGRAM_ADMIN_CHAT_ID', '').strip()
+                if msg and admin_id and TELEGRAM_BOT_TOKEN:
+                    payload = json.dumps({
+                        'chat_id': admin_id,
+                        'text': f'💬 Website chat ({page or "site"}):\n\n{msg}',
+                    }).encode()
+                    req = urllib.request.Request(
+                        f'https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage',
+                        data=payload, headers={'Content-Type': 'application/json'})
+                    urllib.request.urlopen(req, timeout=8, context=ssl_ctx).read()
+                self.send_json(200, {'ok': True})
+            except Exception as e:
+                self.send_json(200, {'ok': False, 'error': str(e)})
+            return
 
         if path == "/order":
             self.handle_order(api_key, api_secret, body)
