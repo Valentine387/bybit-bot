@@ -427,7 +427,7 @@ class BybitProxyHandler(BaseHTTPRequestHandler):
                 "min_confidence": _auto_creds['min_confidence'],
                 "auto_env_default": os.environ.get('AUTO_TRADING', 'false'),
                 "telegram_enabled": _telegram_enabled(),
-                "build":          "v4.2-livechat",
+                "build":          "v4.3-refined55",
                 "demo":           _auto_creds.get('demo', USE_DEMO),
             })
 
@@ -2217,15 +2217,15 @@ def _telegram_signal_alert(sig, min_conf, tier='STRONG'):
 # ═══ SCAN LIST — refined set (curated: majors + quality alts, memes removed) ═══
 SCAN_SYMBOLS = [
     'BTCUSDT','ETHUSDT','HYPEUSDT','XRPUSDT','HUSDT',
-    'MNTUSDT','BILLUSDT','VIRTUALUSDT',
+    'MNTUSDT','VIRTUALUSDT',
     'NEARUSDT','TONUSDT','MONUSDT',
     'ASTERUSDT','AVAXUSDT','ONDOUSDT','ENAUSDT','VVVUSDT',
     'XPLUSDT','IPUSDT','LINKUSDT','CCUSDT','AAVEUSDT','BSBUSDT',
     'XLMUSDT','TRXUSDT','PEPEUSDT','SHIBUSDT',
-    'DOTUSDT','UNIUSDT','APTUSDT','ARBUSDT','OPUSDT','FILUSDT','ATOMUSDT','INJUSDT','FETUSDT','RENDERUSDT',
-    'PENDLEUSDT','IMXUSDT','THETAUSDT',
+    'DOTUSDT','UNIUSDT','ARBUSDT','OPUSDT','FILUSDT','ATOMUSDT','INJUSDT','FETUSDT','RENDERUSDT',
+    'PENDLEUSDT',
     'GALAUSDT','ALGOUSDT','VETUSDT','HBARUSDT','XMRUSDT','EOSUSDT','BCHUSDT','ETCUSDT','KASUSDT',
-    'STXUSDT','FTMUSDT','MANAUSDT','MKRUSDT','LDOUSDT',
+    'STXUSDT','FTMUSDT','MANAUSDT','MKRUSDT',
     'COMPUSDT','GMXUSDT','DYDXUSDT','RUNEUSDT','KSMUSDT',
 ]
 SPOT_SCAN_SYMBOLS = ['ETHBTC', 'BBSOLUSDT']
